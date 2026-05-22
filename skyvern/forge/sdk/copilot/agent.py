@@ -31,7 +31,6 @@ from pydantic import ValidationError
 
 from skyvern.forge import app
 from skyvern.forge.prompts import prompt_engine
-from skyvern.forge.sdk.copilot.block_goal_wrapping import wrap_block_goals
 from skyvern.forge.sdk.copilot.config import CopilotConfig
 from skyvern.forge.sdk.copilot.context import COPILOT_RESPONSE_TYPES, AgentResult, CopilotContext, StructuredContext
 from skyvern.forge.sdk.copilot.output_policy import (
@@ -151,13 +150,6 @@ class RequestPolicyGuardrailInputs:
     browser_session_id: str | None = None
 
 
-_BLOCK_GOAL_CONTEXT_PREAMBLE = (
-    "Interpret the latest user message in the context of the prior conversation. If it is a correction, "
-    "refinement, or continuation, preserve the established website, actions, filters, and output requirements "
-    "except where the latest message changes them."
-)
-
-
 async def _resolve_live_browser_session_id(
     chat_request: WorkflowCopilotChatRequest,
     organization_id: str,
@@ -236,24 +228,7 @@ def _build_block_goal_main_goal(
     raw_current_message = (user_message or "").strip()
     if not raw_current_message:
         return ""
-    current_message = escape_code_fences(raw_current_message)
-    structured_context = StructuredContext.from_json_str(global_llm_context)
-    context_sections: list[str] = []
-    if structured_context.user_goal.strip():
-        prior_goal = escape_code_fences(structured_context.user_goal.strip())
-        context_sections.append(f"Prior high-level goal:\n{prior_goal}")
-    if chat_history_text.strip():
-        escaped_chat_history = escape_code_fences(chat_history_text.strip())
-        context_sections.append(f"Recent chat history:\n{escaped_chat_history}")
-    if not context_sections:
-        return current_message
-
-    return (
-        _BLOCK_GOAL_CONTEXT_PREAMBLE
-        + "\n\n"
-        + "\n\n".join(context_sections)
-        + f"\n\nLatest user message:\n{current_message}"
-    )
+    return escape_code_fences(raw_current_message)
 
 
 def _request_policy_agent_inputs(
@@ -1018,11 +993,6 @@ def _translate_to_agent_result(
                 ctx.last_test_ok = None
                 workflow_yaml = ""
         if workflow_yaml:
-            block_goal_main_goal = ctx.block_goal_main_goal or ctx.user_message
-            if block_goal_main_goal:
-                workflow_yaml = wrap_block_goals(workflow_yaml, block_goal_main_goal)
-            else:
-                LOG.warning("REPLACE_WORKFLOW inline path missing block-goal context; skipping block-goal wrap")
             try:
                 last_workflow = _process_workflow_yaml(
                     workflow_id=chat_request.workflow_id,
