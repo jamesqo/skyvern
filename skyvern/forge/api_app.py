@@ -384,6 +384,10 @@ def create_api_app() -> FastAPI:
             LOG.info("OTEL tracer provider initialized before forge app creation")
         except Exception as e:
             LOG.warning("Failed to initialize OTEL tracer provider early", error=str(e))
+    elif settings.OTEL_ENABLED:
+        from skyvern.forge.sdk.trace.oss_otel import initialize_oss_otel  # noqa: PLC0415
+
+        initialize_oss_otel()
 
     forge_app_instance = start_forge_app()
 
