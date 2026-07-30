@@ -149,6 +149,57 @@ async def test_upload_resolves_before_dispatch_and_reuses_exact_selection(select
 
 
 @pytest.mark.asyncio
+async def test_direct_upload_uses_sole_file_input() -> None:
+    file_input = MagicMock(
+        set_input_files=AsyncMock(),
+    )
+    inputs = MagicMock(
+        count=AsyncMock(return_value=1),
+    )
+    inputs.nth.return_value = file_input
+    page = MagicMock()
+    page.locator.return_value = inputs
+
+    with patch.object(
+        handler_module,
+        "_wait_for_upload_processing",
+        AsyncMock(),
+    ) as wait:
+        uploaded = await handler_module._try_direct_file_input_upload(
+            page,
+            "/tmp/resume.pdf",
+        )
+
+    assert uploaded is True
+    file_input.set_input_files.assert_awaited_once_with(
+        "/tmp/resume.pdf",
+        timeout=handler_module.settings.BROWSER_ACTION_TIMEOUT_MS,
+    )
+    wait.assert_awaited_once_with(page, engine_selection=None)
+
+
+@pytest.mark.asyncio
+async def test_direct_upload_rejects_ambiguous_file_inputs() -> None:
+    first = MagicMock(evaluate=AsyncMock(return_value=10))
+    second = MagicMock(evaluate=AsyncMock(return_value=10))
+    inputs = MagicMock(
+        count=AsyncMock(return_value=2),
+    )
+    inputs.nth.side_effect = [first, second]
+    page = MagicMock()
+    page.locator.return_value = inputs
+
+    uploaded = await handler_module._try_direct_file_input_upload(
+        page,
+        "/tmp/resume.pdf",
+    )
+
+    assert uploaded is False
+    first.set_input_files.assert_not_called()
+    second.set_input_files.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_swallows_playwright_timeout() -> None:
     mock_frame = AsyncMock()
     mock_frame.wait_for_page_ready.side_effect = PlaywrightTimeoutError("Timeout 3000ms exceeded")

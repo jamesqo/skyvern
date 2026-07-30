@@ -4984,6 +4984,64 @@ async def _wait_for_upload_processing(page: Page, engine_selection: BrowserEngin
             raise
 
 
+async def _find_unambiguous_file_input(page: Page) -> Locator | None:
+    """Return the sole file input or one uniquely labelled as a résumé input."""
+    inputs = page.locator('input[type="file"]')
+    count = await inputs.count()
+    if count == 0:
+        return None
+    if count == 1:
+        return inputs.nth(0)
+
+    scored: list[tuple[int, int]] = []
+    for index in range(count):
+        score = int(
+            await inputs.nth(index).evaluate(
+                """element => {
+                    const context = [
+                        element.id,
+                        element.name,
+                        element.accept,
+                        element.getAttribute("aria-label"),
+                        element.parentElement?.innerText,
+                    ].filter(Boolean).join(" ").toLowerCase();
+                    let value = 0;
+                    if (context.includes("resume") || context.includes("résumé")) value += 10;
+                    if (context.includes("cv")) value += 8;
+                    if (context.includes("pdf")) value += 2;
+                    return value;
+                }"""
+            )
+        )
+        scored.append((score, index))
+
+    scored.sort(reverse=True)
+    best_score, best_index = scored[0]
+    if best_score < 8 or best_score == scored[1][0]:
+        return None
+    return inputs.nth(best_index)
+
+
+async def _try_direct_file_input_upload(
+    page: Page,
+    file_path: list[str] | str,
+    engine_selection: BrowserEngineSelection | None = None,
+) -> bool:
+    """Attach files through one unambiguous DOM input when button handling fails."""
+    file_input = await _find_unambiguous_file_input(page)
+    if file_input is None:
+        return False
+    await file_input.set_input_files(
+        file_path,
+        timeout=settings.BROWSER_ACTION_TIMEOUT_MS,
+    )
+    await _wait_for_upload_processing(
+        page,
+        engine_selection=engine_selection,
+    )
+    return True
+
+
 @traced(name="skyvern.agent.action.upload_file")
 async def handle_upload_file_action(
     action: actions.UploadFileAction,
@@ -5067,6 +5125,19 @@ async def handle_upload_file_action(
             return [ActionFailure(Exception(f"Failed to download file from {action.file_url}"))]
     else:
         LOG.info("Taking UploadFileAction. Found non file input tag", action=action)
+        engine_selection = resolve_engine_selection_for_task(
+            task,
+            app.BROWSER_MANAGER,
+        )
+        if file_path and await _try_direct_file_input_upload(
+            page,
+            file_path,
+            engine_selection=engine_selection,
+        ):
+            LOG.info("Uploaded through underlying file input", action=action)
+            result = ActionSuccess()
+            result.upload_file_triggered = True
+            return [result]
         # treat it as a click action
         action.is_upload_file_tag = False
         # The action itself changed shape; re-project it before it takes the click path.
@@ -6857,8 +6928,36 @@ async def chain_click(
 
     finally:
         click_succeeded = any(isinstance(r, ActionSuccess) for r in action_results)
+        direct_upload_succeeded = False
 
-        if is_filechooser_trigger:
+        if is_upload_action and file and not is_filechooser_trigger:
+            try:
+                direct_upload_succeeded = await _try_direct_file_input_upload(
+                    page,
+                    file,
+                    engine_selection=engine_selection,
+                )
+            except Exception:
+                LOG.exception(
+                    "Post-click direct file upload failed",
+                    action=action,
+                )
+
+            if direct_upload_succeeded:
+                LOG.info(
+                    "Uploaded through post-click file input",
+                    action=action,
+                )
+                action_results[:] = [ActionSuccess()]
+                click_succeeded = True
+
+        if direct_upload_succeeded:
+            if not has_pending:
+                page.remove_listener("filechooser", fc_func)
+            if context is not None and context.pending_file_chooser is not None:
+                context.cleanup_pending_file_chooser()
+
+        elif is_filechooser_trigger:
             # File chooser opened during this click — upload completed normally
             LOG.info("File chooser triggered during this click", action=action)
             if file:
@@ -6909,8 +7008,9 @@ async def chain_click(
         if is_upload_action:
             for r in action_results:
                 if isinstance(r, ActionSuccess):
-                    r.upload_file_triggered = is_filechooser_trigger
-                    if not is_filechooser_trigger:
+                    upload_succeeded = is_filechooser_trigger or direct_upload_succeeded
+                    r.upload_file_triggered = upload_succeeded
+                    if not upload_succeeded:
                         r.needs_followup = True
                         r.followup_message = UPLOAD_PENDING_FOLLOWUP_MESSAGE
 
