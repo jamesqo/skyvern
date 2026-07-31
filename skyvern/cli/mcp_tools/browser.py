@@ -2844,10 +2844,11 @@ async def skyvern_frame_application(
     try:
         for frame in await do_frame_list(page):
             await do_frame_switch(page, index=frame.index)
-            if bool(await page.evaluate(_APPLICATION_FORM_FRAME_SCRIPT)):
+            if bool(await page.page.frames[frame.index].evaluate(_APPLICATION_FORM_FRAME_SCRIPT)):
                 candidates.append(frame)
     except Exception as e:
         do_frame_main(page)
+        get_current_session()._working_frame = None
         return action_result(
             "skyvern_frame_application",
             ok=False,
@@ -2861,6 +2862,7 @@ async def skyvern_frame_application(
 
     if len(candidates) != 1:
         do_frame_main(page)
+        get_current_session()._working_frame = None
         return action_result(
             "skyvern_frame_application",
             ok=False,
