@@ -22,6 +22,9 @@ class TaskExecutionPolicy(BaseModel):
 
     allow_final_submit: bool = True
     max_open_pages: int | None = Field(default=None, ge=1)
+    max_action_attempts: int | None = Field(default=None, ge=1)
+    require_review_ready: bool = False
+    require_verified_upload: bool = False
 
 
 DEFAULT_EXECUTION_POLICY = TaskExecutionPolicy()
@@ -58,5 +61,5 @@ def embed_task_execution_policy(
     if policy is None:
         return payload
     result = dict(payload) if isinstance(payload, dict) else {}
-    result[EXECUTION_POLICY_KEY] = policy.model_dump(exclude_none=True)
+    result[EXECUTION_POLICY_KEY] = policy.model_dump(exclude_none=True, exclude_defaults=True)
     return result

@@ -16,6 +16,7 @@ import httpx
 import structlog
 from cachetools import TTLCache
 from google.oauth2.credentials import Credentials
+from opentelemetry import trace as otel_trace
 from playwright.async_api import Frame, Page
 
 from skyvern.config import settings
@@ -34,6 +35,7 @@ from skyvern.forge.prompts import prompt_engine
 from skyvern.forge.sdk.api.aws import AsyncAWSClient
 from skyvern.forge.sdk.api.azure import AzureClientFactory
 from skyvern.forge.sdk.api.llm.exceptions import LLMProviderError
+from skyvern.forge.sdk.application_review import audit_application_review
 from skyvern.forge.sdk.cache.base import CACHE_EXPIRE_TIME
 from skyvern.forge.sdk.copilot.config import CopilotConfig, block_authoring_policy_from_code_only_mode
 from skyvern.forge.sdk.core import skyvern_context
@@ -60,6 +62,7 @@ from skyvern.forge.sdk.services import (
     sftp_service,
 )
 from skyvern.forge.sdk.services.credentials import AuthenticatorTotpParseResult
+from skyvern.forge.sdk.task_execution_policy import parse_task_execution_policy
 from skyvern.forge.sdk.trace import traced
 from skyvern.forge.sdk.workflow.models.block import BaseTaskBlock, BlockTypeVar
 from skyvern.schemas.workflows import BlockResult, FileStorageType, FileUploadDestination
@@ -1355,6 +1358,7 @@ class AgentFunction:
         if step.status == StepStatus.completed:
             await self._maybe_close_magic_link_page(task)
 
+    @traced(name="skyvern.agent.application_review")
     async def gate_step_completion(
         self,
         *,
@@ -1364,16 +1368,34 @@ class AgentFunction:
         page: Page | None,
         browser_state: BrowserState,
     ) -> bool:
-        """Gate whether an agent completion verdict for this step is accepted.
+        """Accept completion only when an opted-in application is ready for review."""
 
-        Called once the parallel verifier has produced a CompleteAction, before the step
-        and task are marked completed. Return True to accept; False to reject, which makes
-        the agent keep going and fail safe at max steps rather than falsely completing.
-        OSS accepts everything; a deployment may override to hold specific blocks (e.g. a
-        submit block whose AI fallback would otherwise complete without a deterministic
-        confirmation check) to a stricter gate.
-        """
-        return True
+        policy = parse_task_execution_policy(task.navigation_payload)
+        if not policy.require_review_ready:
+            return True
+
+        working_page = await browser_state.get_working_page() or page
+        span = otel_trace.get_current_span()
+        if working_page is None:
+            span.set_attribute("application_review.ready", False)
+            span.set_attribute("application_review.form_found", False)
+            return False
+
+        context = skyvern_context.current()
+        upload_verified = context is not None and task.task_id in context.verified_file_upload_task_ids
+        readiness = await audit_application_review(
+            working_page,
+            require_verified_upload=policy.require_verified_upload,
+            upload_verified=upload_verified,
+        )
+        span.set_attribute("application_review.ready", readiness.ready)
+        span.set_attribute("application_review.form_found", readiness.form_found)
+        span.set_attribute("application_review.missing_required_count", readiness.missing_required_count)
+        span.set_attribute("application_review.invalid_control_count", readiness.invalid_control_count)
+        span.set_attribute("application_review.final_submit_count", readiness.final_submit_count)
+        span.set_attribute("application_review.blocking_dialog_count", readiness.blocking_dialog_count)
+        span.set_attribute("application_review.upload_verified", readiness.upload_verified)
+        return readiness.ready
 
     async def _maybe_close_magic_link_page(self, task: Task) -> None:
         """Close a magic-link confirmation page if it shows close/return signals.

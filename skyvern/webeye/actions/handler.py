@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import copy
+import hashlib
 import json
 import os
 import re
@@ -3284,6 +3285,7 @@ class ActionHandler:
         llm_caller = LLMCallerManager.get_llm_caller(task.task_id)
         action_span = otel_trace.get_current_span()
         browser_state = app.BROWSER_MANAGER.get_for_task(task.task_id, workflow_run_id=task.workflow_run_id)
+        action_fingerprint = _action_retry_fingerprint(task, action)
         execution_timeout_seconds = _resolve_action_execution_timeout(action)
         execution_timeout_scope: asyncio.Timeout | None = None
         try:
@@ -3294,6 +3296,8 @@ class ActionHandler:
                         return actions_result
 
                     policy_violation = _execution_policy_violation(task, action)
+                    if policy_violation is None:
+                        policy_violation = _retry_policy_violation(task, action_fingerprint)
                     if policy_violation is not None:
                         action_span.set_attribute("task_execution_policy.blocked", True)
                         action_span.set_attribute("task_execution_policy.reason", policy_violation)
@@ -3381,6 +3385,7 @@ class ActionHandler:
             LOG.exception("Unhandled exception in action handler", action=action)
             actions_result.append(ActionFailure(e))
         finally:
+            _record_action_attempt(task, action_fingerprint, actions_result)
             tool_result_content = ""
 
             if actions_result and isinstance(actions_result[-1], ActionSuccess):
@@ -3461,6 +3466,54 @@ def _execution_policy_violation(task: Task, action: Action) -> str | None:
     return None
 
 
+def _action_retry_fingerprint(task: Task, action: Action) -> str | None:
+    policy = parse_task_execution_policy(task.navigation_payload)
+    if policy.max_action_attempts is None:
+        return None
+    payload = action.model_dump(
+        exclude={
+            "action_id",
+            "action_order",
+            "errors",
+            "organization_id",
+            "reasoning",
+            "status",
+            "step_id",
+            "step_order",
+            "task_id",
+            "tool_call_id",
+            "workflow_run_id",
+        },
+        mode="json",
+    )
+    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(serialized.encode()).hexdigest()
+
+
+def _retry_policy_violation(task: Task, fingerprint: str | None) -> str | None:
+    if fingerprint is None:
+        return None
+    policy = parse_task_execution_policy(task.navigation_payload)
+    context = skyvern_context.current()
+    if context is None or policy.max_action_attempts is None:
+        return None
+    attempts = context.failed_task_action_attempts.get((task.task_id, fingerprint), 0)
+    return "repeated_action" if attempts >= policy.max_action_attempts else None
+
+
+def _record_action_attempt(task: Task, fingerprint: str | None, results: list[ActionResult]) -> None:
+    if fingerprint is None:
+        return
+    context = skyvern_context.current()
+    if context is None:
+        return
+    key = (task.task_id, fingerprint)
+    if any(isinstance(result, (ActionSuccess, ActionAbort)) for result in results):
+        context.failed_task_action_attempts.pop(key, None)
+        return
+    context.failed_task_action_attempts[key] = context.failed_task_action_attempts.get(key, 0) + 1
+
+
 async def _enforce_open_page_limit(task: Task, browser_state: BrowserState | None, page: Page) -> int:
     """Close oldest excess pages and keep newest page active after an action."""
 
@@ -3482,7 +3535,7 @@ async def _enforce_open_page_limit(task: Task, browser_state: BrowserState | Non
     return excess_count
 
 
-_FINAL_SUBMISSION_CONTROL_SCRIPT = """
+_FINAL_SUBMISSION_CONTROL_SCRIPT = r"""
 element => {
     const control = element.closest("button, input, [role='button']") || element;
     const form = control.form || control.closest("form");
@@ -3506,7 +3559,7 @@ element => {
 """
 
 
-_ENTER_MAY_SUBMIT_SCRIPT = """
+_ENTER_MAY_SUBMIT_SCRIPT = r"""
 () => {
     const element = document.activeElement;
     if (!element || !element.closest("form")) return false;
@@ -3517,6 +3570,11 @@ _ENTER_MAY_SUBMIT_SCRIPT = """
     return true;
 }
 """
+
+_COORDINATE_FINAL_SUBMISSION_SCRIPT = (
+    "data => { const element = document.elementFromPoint(data.x, data.y); "
+    f"return element ? ({_FINAL_SUBMISSION_CONTROL_SCRIPT})(element) : false; }}"
+)
 
 
 async def _final_submission_blocked(task: Task, locator: Locator) -> bool:
@@ -3534,6 +3592,13 @@ async def _enter_submission_blocked(task: Task, page: Page, keys: list[str] | st
     if not normalized_keys.intersection({"enter", "numpadenter"}):
         return False
     return bool(await page.evaluate(_ENTER_MAY_SUBMIT_SCRIPT))
+
+
+async def _coordinate_submission_blocked(task: Task, page: Page, x: float, y: float) -> bool:
+    policy = parse_task_execution_policy(task.navigation_payload)
+    if policy.allow_final_submit:
+        return False
+    return bool(await page.evaluate(_COORDINATE_FINAL_SUBMISSION_SCRIPT, {"x": x, "y": y}))
 
 
 @traced(name="skyvern.agent.action.solve_captcha")
@@ -3627,6 +3692,9 @@ async def handle_click_action(
                     return [ActionFailure(TaskExecutionPolicyViolation("final_submit"))]
                 if await skyvern_element.navigate_to_a_href(page=page):
                     return [ActionSuccess()]
+
+        if await _coordinate_submission_blocked(task, page, action.x, action.y):
+            return [ActionFailure(TaskExecutionPolicyViolation("final_submit"))]
 
         await EventStrategyFactory.move_cursor(page, action.x, action.y)
         if action.repeat == 1:
@@ -5146,6 +5214,12 @@ async def _verify_file_input_upload(locator: Locator, file_path: list[str] | str
         return False
 
 
+def _mark_verified_file_upload(task: Task) -> None:
+    context = skyvern_context.current()
+    if context is not None:
+        context.verified_file_upload_task_ids.add(task.task_id)
+
+
 async def _try_direct_file_input_upload(
     page: Page,
     file_path: list[str] | str,
@@ -5244,6 +5318,7 @@ async def handle_upload_file_action(
 
             await _wait_for_upload_processing(page, engine_selection=engine_selection)
             if await _verify_file_input_upload(locator, file_path):
+                _mark_verified_file_upload(task)
                 return [ActionSuccess()]
             return [ActionFailure(FileUploadVerificationFailed())]
         else:
@@ -5259,6 +5334,7 @@ async def handle_upload_file_action(
             file_path,
             engine_selection=engine_selection,
         ):
+            _mark_verified_file_upload(task)
             LOG.info("Uploaded through underlying file input", action=action)
             result = ActionSuccess()
             result.upload_file_triggered = True
@@ -6693,6 +6769,7 @@ async def chain_click(
         nonlocal is_filechooser_trigger
         is_filechooser_trigger = True
         await fc.set_files(files=file)
+        _mark_verified_file_upload(task)
 
     if not has_pending:
         page.on("filechooser", fc_func)
@@ -7071,6 +7148,7 @@ async def chain_click(
                 )
 
             if direct_upload_succeeded:
+                _mark_verified_file_upload(task)
                 LOG.info(
                     "Uploaded through post-click file input",
                     action=action,
@@ -7112,6 +7190,7 @@ async def chain_click(
             async def deferred_fc_handler(fc: FileChooser) -> None:
                 pending.triggered = True
                 await fc.set_files(files=pending.file_paths)
+                _mark_verified_file_upload(task)
                 # Auto-remove after firing to prevent double-consumption
                 pending.cleanup()
 

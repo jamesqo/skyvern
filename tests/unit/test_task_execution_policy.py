@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from pydantic import ValidationError
 
+from skyvern.forge.sdk.core import skyvern_context
+from skyvern.forge.sdk.core.skyvern_context import SkyvernContext
 from skyvern.forge.sdk.schemas.tasks import TaskRequest
 from skyvern.forge.sdk.task_execution_policy import (
     EXECUTION_POLICY_KEY,
@@ -16,7 +18,8 @@ from skyvern.forge.sdk.task_execution_policy import (
     prompt_navigation_payload,
 )
 from skyvern.webeye.actions import handler as handler_module
-from skyvern.webeye.actions.actions import ExecuteJsAction, NewTabAction
+from skyvern.webeye.actions.actions import ExecuteJsAction, InputTextAction, NewTabAction
+from skyvern.webeye.actions.responses import ActionFailure, ActionSuccess
 
 
 def _payload(**policy: object) -> dict[str, object]:
@@ -28,6 +31,9 @@ def test_missing_policy_preserves_upstream_behavior() -> None:
 
     assert policy.allow_final_submit is True
     assert policy.max_open_pages is None
+    assert policy.max_action_attempts is None
+    assert policy.require_review_ready is False
+    assert policy.require_verified_upload is False
 
 
 def test_policy_metadata_is_removed_from_prompt_payload() -> None:
@@ -92,6 +98,14 @@ async def test_no_submit_policy_blocks_enter_inside_form() -> None:
 
 
 @pytest.mark.asyncio
+async def test_no_submit_policy_blocks_coordinate_click_on_final_submit() -> None:
+    task = MagicMock(navigation_payload=_payload(allow_final_submit=False))
+    page = MagicMock(evaluate=AsyncMock(return_value=True))
+
+    assert await handler_module._coordinate_submission_blocked(task, page, 10, 20) is True
+
+
+@pytest.mark.asyncio
 async def test_single_page_policy_closes_oldest_page_and_activates_newest() -> None:
     task = MagicMock(navigation_payload=_payload(max_open_pages=1))
     old_page = MagicMock(is_closed=MagicMock(return_value=False), close=AsyncMock())
@@ -105,3 +119,23 @@ async def test_single_page_policy_closes_oldest_page_and_activates_newest() -> N
     old_page.close.assert_awaited_once_with()
     new_page.close.assert_not_awaited()
     browser_state.set_active_page.assert_awaited_once_with(new_page)
+
+
+def test_repeated_failed_action_is_blocked_at_configured_attempt_limit() -> None:
+    task = MagicMock(
+        task_id="task-1",
+        navigation_payload=_payload(max_action_attempts=2),
+    )
+    action = InputTextAction(element_id="field-1", text="private value")
+    context = SkyvernContext()
+
+    with skyvern_context.scoped(context):
+        fingerprint = handler_module._action_retry_fingerprint(task, action)
+        assert fingerprint is not None
+        assert "private value" not in fingerprint
+        handler_module._record_action_attempt(task, fingerprint, [ActionFailure(RuntimeError("failed"))])
+        assert handler_module._retry_policy_violation(task, fingerprint) is None
+        handler_module._record_action_attempt(task, fingerprint, [ActionFailure(RuntimeError("failed"))])
+        assert handler_module._retry_policy_violation(task, fingerprint) == "repeated_action"
+        handler_module._record_action_attempt(task, fingerprint, [ActionSuccess()])
+        assert handler_module._retry_policy_violation(task, fingerprint) is None
