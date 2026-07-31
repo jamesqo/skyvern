@@ -74,7 +74,7 @@ class TestMCPFrameTools:
         page._working_frame = MagicMock()
         page.page.frames = [
             SimpleNamespace(evaluate=AsyncMock(return_value=False)),
-            SimpleNamespace(evaluate=AsyncMock(return_value=True)),
+            SimpleNamespace(evaluate=AsyncMock(return_value=False)),
             SimpleNamespace(evaluate=AsyncMock(return_value=False)),
         ]
         context = BrowserContext(mode="local", cdp_url="http://chrome:9222")

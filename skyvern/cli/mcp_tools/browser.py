@@ -2844,7 +2844,17 @@ async def skyvern_frame_application(
     try:
         for frame in await do_frame_list(page):
             await do_frame_switch(page, index=frame.index)
-            if bool(await page.page.frames[frame.index].evaluate(_APPLICATION_FORM_FRAME_SCRIPT)):
+            has_form = bool(await page.page.frames[frame.index].evaluate(_APPLICATION_FORM_FRAME_SCRIPT))
+            application_url = (
+                not frame.is_main
+                and re.search(
+                    r"(?:^|[/_.-])(apply|application|job_app)(?:[/_.?=&-]|$)",
+                    frame.url,
+                    re.IGNORECASE,
+                )
+                is not None
+            )
+            if has_form or application_url:
                 candidates.append(frame)
     except Exception as e:
         do_frame_main(page)
