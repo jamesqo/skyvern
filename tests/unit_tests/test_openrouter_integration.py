@@ -194,6 +194,9 @@ async def test_openrouter_payment_required_is_not_retryable(monkeypatch):
     class PaymentRequiredError(Exception):
         status_code = 402
 
+        def __str__(self):
+            return "sensitive provider body"
+
     settings = Settings(
         ENABLE_OPENROUTER=True,
         OPENROUTER_API_KEY="key",
@@ -219,3 +222,5 @@ async def test_openrouter_payment_required_is_not_retryable(monkeypatch):
         await handler("hi", "test")
 
     assert not isinstance(exc_info.value, api_handler_factory.LLMProviderErrorRetryableTask)
+    assert "HTTP 402: payment required or insufficient provider credits" in str(exc_info.value)
+    assert "sensitive provider body" not in str(exc_info.value)

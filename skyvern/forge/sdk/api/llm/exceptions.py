@@ -66,6 +66,24 @@ class LLMProviderErrorRetryableTask(LLMProviderError):
         SkyvernException.__init__(self, f"Retryable error while using LLMProvider {llm_key}{detail}")
 
 
+class LLMProviderRequestRejected(LLMProviderError):
+    """Permanent provider rejection with a safe, body-free user message."""
+
+    def __init__(self, llm_key: str, status_code: int) -> None:
+        self.status_code = status_code
+        reason = {
+            400: "invalid request",
+            401: "invalid provider credentials",
+            402: "payment required or insufficient provider credits",
+            403: "provider authorization denied",
+            404: "provider model or endpoint not found",
+        }.get(status_code, "permanent client error")
+        SkyvernException.__init__(
+            self,
+            f"LLMProvider {llm_key} rejected the request (HTTP {status_code}: {reason})",
+        )
+
+
 _RETRYABLE_HTTP_STATUS_CODES = frozenset({408, 409, 425, 429})
 
 
