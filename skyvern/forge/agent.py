@@ -89,7 +89,10 @@ from skyvern.forge.sdk.api.llm.config_registry import LLMConfigRegistry
 from skyvern.forge.sdk.api.llm.exceptions import (
     LLM_PROVIDER_ERROR_RETRYABLE_TASK_TYPE,
     LLM_PROVIDER_ERROR_TYPE,
+    LLMProviderError,
+    LLMProviderErrorRetryableTask,
     LLMResponseMissingActionsError,
+    provider_error_status_code,
 )
 from skyvern.forge.sdk.api.llm.ui_tars_llm_caller import UITarsLLMCaller
 from skyvern.forge.sdk.api.llm.vertex_cache_manager import get_cache_manager
@@ -1756,6 +1759,32 @@ class ForgeAgent:
         ):
             raise
 
+        except LLMProviderError as e:
+            if not isinstance(e, LLMProviderErrorRetryableTask):
+                status_code = provider_error_status_code(e.__cause__ or e)
+                _step_span.set_attribute("llm.provider_error.retryable", False)
+                if status_code is not None:
+                    _step_span.set_attribute("llm.provider_error.status_code", status_code)
+                LOG.warning(
+                    "Permanent LLM provider error, stopping task without retry",
+                    llm_status_code=status_code,
+                    step_order=step.order,
+                    step_retry=step.retry_index,
+                )
+                raise
+
+            LOG.exception(
+                "Retryable LLM provider exception in agent_step, marking step as failed",
+                step_order=step.order,
+                step_retry=step.retry_index,
+            )
+            detailed_agent_step_output.step_exception = e.__class__.__name__
+            failed_step = await self.update_step(
+                step=step,
+                status=StepStatus.failed,
+                output=detailed_agent_step_output.to_agent_step_output(),
+            )
+            return failed_step, detailed_agent_step_output.get_clean_detailed_output()
         except Exception as e:
             LOG.exception(
                 "Unexpected exception in agent_step, marking step as failed",

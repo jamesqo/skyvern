@@ -33,6 +33,7 @@ from skyvern.forge.sdk.api.llm.exceptions import (
     LLMOutputTruncatedError,
     LLMProviderError,
     LLMProviderErrorRetryableTask,
+    is_retryable_provider_error,
 )
 from skyvern.forge.sdk.api.llm.litellm_transport import configure_litellm_transport
 from skyvern.forge.sdk.api.llm.ui_tars_response import UITarsResponse
@@ -68,6 +69,13 @@ from skyvern.utils.url_validators import validate_fetch_url
 # Keep this server-only side effect out of the package __init__ so the legacy
 # models shim can import without litellm. Legacy LLM calls enter this module.
 configure_litellm_transport()
+
+
+def _provider_error(llm_key: str, cause: Exception) -> LLMProviderError:
+    """Preserve transient retries while failing permanent provider errors immediately."""
+    error_type = LLMProviderErrorRetryableTask if is_retryable_provider_error(cause) else LLMProviderError
+    return error_type(llm_key, cause=cause)
+
 
 LOG = structlog.get_logger()
 _HASHED_HREF_PLACEHOLDER = re.compile(r"\{\{\s*(_[0-9a-f]{64})\s*\}\}")
@@ -1688,7 +1696,7 @@ class LLMAPIHandlerFactory:
                 # _enrich_llm_span — no response object exists so there's nothing to report.
                 except (litellm.exceptions.APIError, *_TRANSIENT_LLM_DEPENDENCY_ERRORS) as e:
                     _llm_span.set_attribute("status", "error")
-                    raise LLMProviderErrorRetryableTask(llm_key, cause=e) from e
+                    raise _provider_error(llm_key, e) from e
                 except litellm.exceptions.ContextWindowExceededError as e:
                     duration_seconds = time.perf_counter() - start_time
                     _llm_span.set_attribute("status", "context_exceeded")
@@ -2269,7 +2277,7 @@ class LLMAPIHandlerFactory:
                 # _enrich_llm_span — no response object exists so there's nothing to report.
                 except (litellm.exceptions.APIError, *_TRANSIENT_LLM_DEPENDENCY_ERRORS) as e:
                     _llm_span.set_attribute("status", "error")
-                    raise LLMProviderErrorRetryableTask(llm_key, cause=e) from e
+                    raise _provider_error(llm_key, e) from e
                 except litellm.exceptions.ContextWindowExceededError as e:
                     duration_seconds = time.perf_counter() - start_time
                     _llm_span.set_attribute("status", "context_exceeded")
@@ -2871,7 +2879,7 @@ class LLMCaller:
                 raise LLMProviderError(self.llm_key, cause=e) from e
             except litellm.exceptions.APIError as e:
                 _llm_span.set_attribute("status", "error")
-                raise LLMProviderErrorRetryableTask(self.llm_key, cause=e) from e
+                raise _provider_error(self.llm_key, e) from e
             except CancelledError:
                 # A cancellation here means the run is being stopped (elapsed-time timeout / user
                 # cancel) or a speculative step was intentionally cancelled. Either way it must
@@ -2899,7 +2907,7 @@ class LLMCaller:
                 raise LLMProviderError(self.llm_key, cause=e) from e
             except APIError as e:
                 _llm_span.set_attribute("status", "error")
-                raise LLMProviderErrorRetryableTask(self.llm_key, cause=e) from e
+                raise _provider_error(self.llm_key, e) from e
             except Exception as e:
                 _llm_span.set_attribute("status", "error")
                 LOG.exception("LLM request failed unexpectedly", llm_key=self.llm_key)
