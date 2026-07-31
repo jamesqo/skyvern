@@ -2808,6 +2808,86 @@ async def skyvern_frame_switch(
     )
 
 
+_APPLICATION_FORM_FRAME_SCRIPT = """
+() => Array.from(document.querySelectorAll("form")).some((form) => {
+  const fields = Array.from(form.querySelectorAll("input, textarea, select"));
+  const fieldText = (field) => [
+    field.name,
+    field.id,
+    field.getAttribute("autocomplete"),
+    field.getAttribute("aria-label"),
+    field.getAttribute("placeholder"),
+  ].filter(Boolean).join(" ").toLowerCase();
+  const hasEmail = fields.some((field) =>
+    field.type === "email" || /(^|[\\s_-])email([\\s_-]|$)/.test(fieldText(field))
+  );
+  const hasName = fields.some((field) =>
+    /(first|last|given|family|full)[\\s_-]*name/.test(fieldText(field))
+  );
+  return hasEmail && hasName;
+})
+"""
+
+
+async def skyvern_frame_application(
+    session_id: Annotated[str | None, Field(description="Browser session ID (pbs_...)")] = None,
+    cdp_url: Annotated[str | None, Field(description="CDP WebSocket URL")] = None,
+) -> dict[str, Any]:
+    """Select the sole frame containing a recognizable job application form."""
+    try:
+        page, ctx = await get_page(session_id=session_id, cdp_url=cdp_url)
+    except BrowserNotAvailableError:
+        return make_result("skyvern_frame_application", ok=False, error=no_browser_error())
+
+    action_result = _action_result_factory(ctx=ctx, page=page)
+    candidates = []
+    try:
+        for frame in await do_frame_list(page):
+            await do_frame_switch(page, index=frame.index)
+            if bool(await page.evaluate(_APPLICATION_FORM_FRAME_SCRIPT)):
+                candidates.append(frame)
+    except Exception as e:
+        do_frame_main(page)
+        return action_result(
+            "skyvern_frame_application",
+            ok=False,
+            browser_context=ctx,
+            error=make_error(
+                ErrorCode.ACTION_FAILED,
+                str(e),
+                "Wait for the application form to load, then retry",
+            ),
+        )
+
+    if len(candidates) != 1:
+        do_frame_main(page)
+        return action_result(
+            "skyvern_frame_application",
+            ok=False,
+            browser_context=ctx,
+            error=make_error(
+                ErrorCode.INVALID_INPUT,
+                f"Expected one application frame, found {len(candidates)}",
+                "Navigate to the full application form before retrying",
+            ),
+        )
+
+    selected = candidates[0]
+    result = await do_frame_switch(page, index=selected.index)
+    state = get_current_session()
+    state._working_frame = page._working_frame
+    clear_session_ref_map(session_id=ctx.session_id, cdp_url=ctx.cdp_url)
+    return action_result(
+        "skyvern_frame_application",
+        browser_context=ctx,
+        data={
+            "frame_name": result.name,
+            "frame_url": result.url,
+            "frame_index": selected.index,
+        },
+    )
+
+
 async def skyvern_frame_main(
     session_id: Annotated[str | None, Field(description="Browser session ID (pbs_...)")] = None,
     cdp_url: Annotated[str | None, Field(description="CDP WebSocket URL")] = None,

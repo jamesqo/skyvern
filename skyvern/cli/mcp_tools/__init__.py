@@ -61,6 +61,7 @@ from .browser import (
     skyvern_extract_and_screenshot,
     skyvern_file_upload,
     skyvern_find,
+    skyvern_frame_application,
     skyvern_frame_list,
     skyvern_frame_main,
     skyvern_frame_switch,
@@ -462,6 +463,7 @@ mcp.tool(tags={"tab_management"}, annotations=_dest("Close Tab"))(skyvern_tab_cl
 mcp.tool(tags={"tab_management"}, annotations=_web_ro("Wait for New Tab"))(skyvern_tab_wait_for_new)
 
 # -- Frame management (iframe switching) --
+mcp.tool(tags={"browser_primitive"}, annotations=_mut("Select Application Frame"))(skyvern_frame_application)
 mcp.tool(tags={"browser_primitive"}, annotations=_mut("Switch Iframe"))(skyvern_frame_switch)
 mcp.tool(tags={"browser_primitive"}, annotations=_mut("Switch to Main Frame"))(skyvern_frame_main)
 mcp.tool(tags={"browser_primitive"}, annotations=_web_ro("List Iframes"))(skyvern_frame_list)
@@ -602,6 +604,7 @@ __all__ = [
     "skyvern_tab_close",
     "skyvern_tab_wait_for_new",
     # Frame management (iframe switching)
+    "skyvern_frame_application",
     "skyvern_frame_switch",
     "skyvern_frame_main",
     "skyvern_frame_list",
