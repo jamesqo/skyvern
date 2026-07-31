@@ -27,3 +27,13 @@ def test_initialize_oss_otel_contains_setup_failures() -> None:
         ),
     ):
         assert oss_otel.initialize_oss_otel() is False
+
+
+def test_initialize_oss_otel_if_enabled_skips_disabled_runtime() -> None:
+    with (
+        patch("skyvern.config.settings.OTEL_ENABLED", False),
+        patch.object(oss_otel, "initialize_oss_otel") as initialize,
+    ):
+        assert oss_otel.initialize_oss_otel_if_enabled() is False
+
+    initialize.assert_not_called()

@@ -132,3 +132,12 @@ def initialize_oss_otel() -> bool:
             error_type=type(exc).__name__,
         )
         return False
+
+
+def initialize_oss_otel_if_enabled() -> bool:
+    """Initialize only when self-hosted OTEL is enabled."""
+    from skyvern.config import settings  # noqa: PLC0415
+
+    if not settings.OTEL_ENABLED:
+        return False
+    return initialize_oss_otel()

@@ -613,6 +613,9 @@ def run_mcp(
     _mcp_eof_shutdown_requested = False
     _mcp_shutdown_exit_code = None
     prepare_cli_runtime(intent=EnvIntent.CLOUD)
+    from skyvern.forge.sdk.trace.oss_otel import initialize_oss_otel_if_enabled  # noqa: PLC0415
+
+    initialize_oss_otel_if_enabled()
     try:
         from skyvern.library.local_browser_profile import (  # noqa: PLC0415
             sweep_local_browser_profiles_with_budget,
