@@ -30,6 +30,8 @@ _SAFE_ATTRIBUTE_KEYS = frozenset(
         "latency_ms",
         "llm_cost",
         "llm_model",
+        "mcp.tool.name",
+        "mcp.tool.ok",
         "organization_id",
         "prompt_tokens",
         "reasoning_tokens",

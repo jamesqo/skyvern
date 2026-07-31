@@ -8,8 +8,10 @@ from typing import Any, Literal
 import structlog
 from fastmcp.server.dependencies import get_http_request
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
+from opentelemetry import trace
 
 from skyvern import analytics
+from skyvern.forge.sdk.trace import traced_span
 
 LOG = structlog.get_logger(__name__)
 
@@ -235,37 +237,43 @@ class MCPTelemetryMiddleware(Middleware):
         call_next: CallNext[Any, Any],
     ) -> Any:
         tool_name = getattr(context.message, "name", None)
-        start = time.perf_counter()
-        try:
-            result = await call_next(context)
-        except Exception as exc:
+        safe_tool_name = tool_name if isinstance(tool_name, str) else UNKNOWN_MCP_CLIENT
+        with traced_span(trace.get_tracer("skyvern.mcp"), "mcp.tool") as span:
+            span.set_attribute("mcp.tool.name", safe_tool_name)
+            start = time.perf_counter()
+            try:
+                result = await call_next(context)
+            except Exception as exc:
+                span.set_attribute("mcp.tool.ok", False)
+                duration_ms = (time.perf_counter() - start) * 1000
+                # Exceptions do not produce MCP content, so response_bytes is only emitted for returned results.
+                with suppress(Exception):
+                    _capture_mcp_event(
+                        "mcp_tool_call",
+                        operation="tools/call",
+                        context=context,
+                        ok=False,
+                        tool_name=tool_name,
+                        error=exc,
+                        duration_ms=duration_ms,
+                    )
+                raise
+
             duration_ms = (time.perf_counter() - start) * 1000
-            # Exceptions do not produce MCP content, so response_bytes is only emitted for returned results.
+            response_bytes = sum(_content_text_bytes(content) for content in (getattr(result, "content", None) or []))
+            tool_ok = _resolve_tool_call_ok(result)
+            span.set_attribute("mcp.tool.ok", tool_ok)
             with suppress(Exception):
                 _capture_mcp_event(
                     "mcp_tool_call",
                     operation="tools/call",
                     context=context,
-                    ok=False,
+                    ok=tool_ok,
                     tool_name=tool_name,
-                    error=exc,
                     duration_ms=duration_ms,
+                    response_bytes=response_bytes,
                 )
-            raise
-
-        duration_ms = (time.perf_counter() - start) * 1000
-        response_bytes = sum(_content_text_bytes(content) for content in (getattr(result, "content", None) or []))
-        with suppress(Exception):
-            _capture_mcp_event(
-                "mcp_tool_call",
-                operation="tools/call",
-                context=context,
-                ok=_resolve_tool_call_ok(result),
-                tool_name=tool_name,
-                duration_ms=duration_ms,
-                response_bytes=response_bytes,
-            )
-        return result
+            return result
 
     async def on_list_tools(
         self,

@@ -8,6 +8,8 @@ def test_safe_span_attributes_drops_sensitive_values() -> None:
         "code.function": "handler",
         "gen_ai.request.model": "test-model",
         "http.url": "https://example.test/application?token=secret",
+        "mcp.tool.name": "skyvern_click",
+        "mcp.tool.ok": True,
         "resume.path": "/private/resume.pdf",
         "exception.message": "secret",
     }
@@ -15,6 +17,8 @@ def test_safe_span_attributes_drops_sensitive_values() -> None:
     assert oss_otel.safe_span_attributes(attributes) == {
         "code.function": "handler",
         "gen_ai.request.model": "test-model",
+        "mcp.tool.name": "skyvern_click",
+        "mcp.tool.ok": True,
     }
 
 
