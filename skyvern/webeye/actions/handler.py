@@ -48,6 +48,7 @@ from skyvern.exceptions import (
     FailToSelectByIndex,
     FailToSelectByLabel,
     FailToSelectByValue,
+    FileUploadVerificationFailed,
     IllegitComplete,
     ImaginaryFileUrl,
     ImaginarySecretValue,
@@ -73,6 +74,7 @@ from skyvern.exceptions import (
     SecretInputMismatch,
     SkyvernException,
     SkyvernPageAnalysisTimeout,
+    TaskExecutionPolicyViolation,
 )
 from skyvern.experimentation.wait_utils import get_or_create_wait_config, get_wait_time
 from skyvern.forge import app
@@ -113,6 +115,7 @@ from skyvern.forge.sdk.services.credentials import (
     parse_totp_config,
 )
 from skyvern.forge.sdk.settings_manager import SettingsManager
+from skyvern.forge.sdk.task_execution_policy import parse_task_execution_policy, prompt_navigation_payload
 from skyvern.forge.sdk.trace import apply_context_attrs, traced, traced_span
 from skyvern.services import service_utils
 from skyvern.services.action_service import get_action_history
@@ -3279,6 +3282,8 @@ class ActionHandler:
         )
         actions_result: list[ActionResult] = []
         llm_caller = LLMCallerManager.get_llm_caller(task.task_id)
+        action_span = otel_trace.get_current_span()
+        browser_state = app.BROWSER_MANAGER.get_for_task(task.task_id, workflow_run_id=task.workflow_run_id)
         execution_timeout_seconds = _resolve_action_execution_timeout(action)
         execution_timeout_scope: asyncio.Timeout | None = None
         try:
@@ -3286,6 +3291,13 @@ class ActionHandler:
                 if action.action_type in ActionHandler._handled_action_types:
                     if isinstance(action, PasteTextAction) and not await _is_paste_text_action_enabled(task):
                         actions_result.append(ActionFailure(Exception("PASTE_TEXT action is disabled")))
+                        return actions_result
+
+                    policy_violation = _execution_policy_violation(task, action)
+                    if policy_violation is not None:
+                        action_span.set_attribute("task_execution_policy.blocked", True)
+                        action_span.set_attribute("task_execution_policy.reason", policy_violation)
+                        actions_result.append(ActionFailure(TaskExecutionPolicyViolation(policy_violation)))
                         return actions_result
 
                     invalid_web_action_check = check_for_invalid_web_action(action, page, scraped_page, task, step)
@@ -3310,6 +3322,9 @@ class ActionHandler:
                     if teardown:
                         results = await teardown(action, page, scraped_page, task, step)
                         actions_result.extend(results)
+
+                    closed_page_count = await _enforce_open_page_limit(task, browser_state, page)
+                    action_span.set_attribute("task_execution_policy.closed_page_count", closed_page_count)
 
                     return actions_result
 
@@ -3437,6 +3452,90 @@ def check_for_invalid_web_action(
     return []
 
 
+def _execution_policy_violation(task: Task, action: Action) -> str | None:
+    policy = parse_task_execution_policy(task.navigation_payload)
+    if isinstance(action, actions.NewTabAction) and policy.max_open_pages == 1:
+        return "new_tab"
+    if isinstance(action, actions.ExecuteJsAction) and not policy.allow_final_submit:
+        return "execute_js"
+    return None
+
+
+async def _enforce_open_page_limit(task: Task, browser_state: BrowserState | None, page: Page) -> int:
+    """Close oldest excess pages and keep newest page active after an action."""
+
+    policy = parse_task_execution_policy(task.navigation_payload)
+    if policy.max_open_pages is None:
+        return 0
+
+    pages = [candidate for candidate in page.context.pages if not candidate.is_closed()]
+    excess_count = len(pages) - policy.max_open_pages
+    if excess_count <= 0:
+        return 0
+
+    keep = pages[-policy.max_open_pages :]
+    for candidate in pages[:excess_count]:
+        await candidate.close()
+
+    if browser_state is not None:
+        await browser_state.set_active_page(keep[-1])
+    return excess_count
+
+
+_FINAL_SUBMISSION_CONTROL_SCRIPT = """
+element => {
+    const control = element.closest("button, input, [role='button']") || element;
+    const form = control.form || control.closest("form");
+    if (!form) return false;
+
+    const tag = control.tagName.toLowerCase();
+    const type = (control.getAttribute("type") || (tag === "button" ? "submit" : "")).toLowerCase();
+    const role = (control.getAttribute("role") || "").toLowerCase();
+    if (type !== "submit" && role !== "button" && tag !== "button") return false;
+
+    const label = [
+        control.innerText,
+        control.value,
+        control.getAttribute("aria-label"),
+        control.getAttribute("title"),
+    ].filter(Boolean).join(" ").replace(/\\s+/g, " ").trim().toLowerCase();
+
+    return /(^|\b)(submit|send application|complete application|finish application|apply now)(\b|$)/.test(label)
+        || label === "apply";
+}
+"""
+
+
+_ENTER_MAY_SUBMIT_SCRIPT = """
+() => {
+    const element = document.activeElement;
+    if (!element || !element.closest("form")) return false;
+    if (element.tagName.toLowerCase() === "textarea" || element.isContentEditable) return false;
+    const role = (element.getAttribute("role") || "").toLowerCase();
+    const expanded = (element.getAttribute("aria-expanded") || "").toLowerCase();
+    if (role === "combobox" && expanded === "true") return false;
+    return true;
+}
+"""
+
+
+async def _final_submission_blocked(task: Task, locator: Locator) -> bool:
+    policy = parse_task_execution_policy(task.navigation_payload)
+    if policy.allow_final_submit:
+        return False
+    return bool(await locator.evaluate(_FINAL_SUBMISSION_CONTROL_SCRIPT))
+
+
+async def _enter_submission_blocked(task: Task, page: Page, keys: list[str] | str) -> bool:
+    policy = parse_task_execution_policy(task.navigation_payload)
+    if policy.allow_final_submit:
+        return False
+    normalized_keys = {keys.lower()} if isinstance(keys, str) else {key.lower() for key in keys}
+    if not normalized_keys.intersection({"enter", "numpadenter"}):
+        return False
+    return bool(await page.evaluate(_ENTER_MAY_SUBMIT_SCRIPT))
+
+
 @traced(name="skyvern.agent.action.solve_captcha")
 async def handle_solve_captcha_action(
     action: actions.SolveCaptchaAction,
@@ -3524,6 +3623,8 @@ async def handle_click_action(
         LOG.info("Clicked element at location", x=action.x, y=action.y, element_id=element_id, button=action.button)
         if element_id:
             if skyvern_element := await dom.safe_get_skyvern_element_by_id(element_id):
+                if await _final_submission_blocked(task, skyvern_element.get_locator()):
+                    return [ActionFailure(TaskExecutionPolicyViolation("final_submit"))]
                 if await skyvern_element.navigate_to_a_href(page=page):
                     return [ActionSuccess()]
 
@@ -3540,6 +3641,9 @@ async def handle_click_action(
         return [ActionSuccess()]
 
     skyvern_element = await dom.get_skyvern_element_by_id(action.element_id)
+
+    if await _final_submission_blocked(task, skyvern_element.get_locator()):
+        return [ActionFailure(TaskExecutionPolicyViolation("final_submit"))]
 
     # Wait after getting element to allow any dynamic changes
     await asyncio.sleep(get_wait_time(wait_config, "post_click_delay", default=0.3))
@@ -3693,7 +3797,7 @@ async def _build_after_click_verify_prompt(
         template_name="check-user-goal",
         navigation_goal=unwrapped_goals.navigation_goal,
         big_goal_context=unwrapped_goals.big_goal_context,
-        navigation_payload=task.navigation_payload,
+        navigation_payload=prompt_navigation_payload(task.navigation_payload),
         new_elements_ids=new_element_ids,
         without_screenshots=True,
         # No action_history_evidence: this call site judges mid-action continuation, and the
@@ -5022,6 +5126,26 @@ async def _find_unambiguous_file_input(page: Page) -> Locator | None:
     return inputs.nth(best_index)
 
 
+async def _verify_file_input_upload(locator: Locator, file_path: list[str] | str) -> bool:
+    """Confirm retained File objects or rendered filenames after upload settles."""
+
+    paths = file_path if isinstance(file_path, list) else [file_path]
+    filenames = [Path(path).name for path in paths]
+    try:
+        return bool(
+            await locator.evaluate(
+                """(element, expected) => {
+                    if (element.files?.length >= expected.count) return true;
+                    const text = element.ownerDocument?.body?.innerText || "";
+                    return expected.filenames.every((name) => text.includes(name));
+                }""",
+                {"count": len(paths), "filenames": filenames},
+            )
+        )
+    except Exception:
+        return False
+
+
 async def _try_direct_file_input_upload(
     page: Page,
     file_path: list[str] | str,
@@ -5039,7 +5163,7 @@ async def _try_direct_file_input_upload(
         page,
         engine_selection=engine_selection,
     )
-    return True
+    return await _verify_file_input_upload(file_input, file_path)
 
 
 @traced(name="skyvern.agent.action.upload_file")
@@ -5119,8 +5243,9 @@ async def handle_upload_file_action(
             )
 
             await _wait_for_upload_processing(page, engine_selection=engine_selection)
-
-            return [ActionSuccess()]
+            if await _verify_file_input_upload(locator, file_path):
+                return [ActionSuccess()]
+            return [ActionFailure(FileUploadVerificationFailed())]
         else:
             return [ActionFailure(Exception(f"Failed to download file from {action.file_url}"))]
     else:
@@ -5980,6 +6105,8 @@ async def handle_keypress_action(
     task: Task,
     step: Step,
 ) -> list[ActionResult]:
+    if await _enter_submission_blocked(task, page, action.keys):
+        return [ActionFailure(TaskExecutionPolicyViolation("enter_in_form"))]
     await handler_utils.keypress(page, action.keys, hold=action.hold, duration=action.duration, repeat=action.repeat)
     return [ActionSuccess()]
 
@@ -9941,7 +10068,7 @@ async def extract_information_for_navigation_goal(
         template_name="extract-information",
         html_need_skyvern_attrs=False,
         navigation_goal=task.navigation_goal,
-        navigation_payload=task.navigation_payload,
+        navigation_payload=prompt_navigation_payload(task.navigation_payload),
         previous_extracted_information=previous_info_capped,
         data_extraction_goal=task.data_extraction_goal,
         extracted_information_schema=capped_schema,
@@ -9997,7 +10124,7 @@ async def extract_information_for_navigation_goal(
             current_url=scraped_page_refreshed.url,
             data_extraction_goal=task.data_extraction_goal,
             extracted_information_schema=post_ceiling_kwargs["extracted_information_schema"],
-            navigation_payload=task.navigation_payload,
+            navigation_payload=prompt_navigation_payload(task.navigation_payload),
             error_code_mapping=error_code_mapping_str,
             previous_extracted_information=post_ceiling_kwargs["previous_extracted_information"],
             llm_key=llm_key_override,

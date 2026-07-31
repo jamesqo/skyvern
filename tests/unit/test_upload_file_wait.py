@@ -152,6 +152,7 @@ async def test_upload_resolves_before_dispatch_and_reuses_exact_selection(select
 async def test_direct_upload_uses_sole_file_input() -> None:
     file_input = MagicMock(
         set_input_files=AsyncMock(),
+        evaluate=AsyncMock(return_value=True),
     )
     inputs = MagicMock(
         count=AsyncMock(return_value=1),
@@ -176,6 +177,23 @@ async def test_direct_upload_uses_sole_file_input() -> None:
         timeout=handler_module.settings.BROWSER_ACTION_TIMEOUT_MS,
     )
     wait.assert_awaited_once_with(page, engine_selection=None)
+
+
+@pytest.mark.asyncio
+async def test_direct_upload_fails_without_retained_attachment_evidence() -> None:
+    file_input = MagicMock(
+        set_input_files=AsyncMock(),
+        evaluate=AsyncMock(return_value=False),
+    )
+    inputs = MagicMock(count=AsyncMock(return_value=1))
+    inputs.nth.return_value = file_input
+    page = MagicMock()
+    page.locator.return_value = inputs
+
+    with patch.object(handler_module, "_wait_for_upload_processing", AsyncMock()):
+        uploaded = await handler_module._try_direct_file_input_upload(page, "/tmp/resume.pdf")
+
+    assert uploaded is False
 
 
 @pytest.mark.asyncio

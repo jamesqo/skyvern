@@ -15,6 +15,7 @@ from pydantic import (
 
 from skyvern.forge.sdk.db.enums import BrowserSeedSource, WorkflowRunTriggerType
 from skyvern.forge.sdk.schemas.files import FileInfo
+from skyvern.forge.sdk.task_execution_policy import TaskExecutionPolicy
 from skyvern.forge.sdk.workflow.models.run_limits import (
     WORKFLOW_RUN_DEFAULT_MAX_ELAPSED_TIME_MINUTES,
     WORKFLOW_RUN_MAX_ELAPSED_TIME_MINUTES,
@@ -195,6 +196,10 @@ class TaskRunRequest(BaseModel):
         default=None,
         description="Whether to run the task with agent or code. Null means use the default.",
         examples=["agent", "code"],
+    )
+    execution_policy: TaskExecutionPolicy | None = Field(
+        default=None,
+        description="Hard browser-runtime limits. These are enforced independently of the task prompt.",
     )
 
     @field_validator("run_with", mode="before")

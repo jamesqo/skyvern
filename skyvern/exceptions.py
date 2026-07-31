@@ -193,6 +193,20 @@ class BrowserActionPolicyNotEnforceable(SkyvernHTTPException):
         )
 
 
+class TaskExecutionPolicyViolation(SkyvernException):
+    """An autonomous browser action violated caller-supplied hard limits."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(f"Task execution policy blocked action: {reason}")
+
+
+class FileUploadVerificationFailed(SkyvernException):
+    """Browser accepted upload command but retained no attachment evidence."""
+
+    def __init__(self) -> None:
+        super().__init__("File upload could not be verified after the page settled")
+
+
 class RateLimitExceeded(SkyvernHTTPException):
     def __init__(self, organization_id: str, max_requests: int, window_seconds: int):
         message = (

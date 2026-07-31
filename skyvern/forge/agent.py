@@ -128,6 +128,7 @@ from skyvern.forge.sdk.schemas.organizations import Organization
 from skyvern.forge.sdk.schemas.tasks import Task, TaskRequest, TaskResponse, TaskStatus
 from skyvern.forge.sdk.schemas.totp_codes import OTPType
 from skyvern.forge.sdk.submission import shadow as submission_shadow
+from skyvern.forge.sdk.task_execution_policy import prompt_navigation_payload
 from skyvern.forge.sdk.trace import VerificationTrigger, apply_context_attrs, traced, traced_span
 from skyvern.forge.sdk.workflow.context_manager import WorkflowRunContext
 from skyvern.forge.sdk.workflow.models.block import (
@@ -3264,7 +3265,7 @@ class ForgeAgent:
             prompt_engine=prompt_engine,
             template_name=template_name,
             navigation_goal=unwrapped_goals.navigation_goal,
-            navigation_payload=task.navigation_payload,
+            navigation_payload=prompt_navigation_payload(task.navigation_payload),
             complete_criterion=unwrapped_goals.complete_criterion,
             complete_criterion_is_untrusted=bool(
                 unwrapped_goals.complete_criterion and _ctx and _ctx.complete_criterion_is_untrusted
@@ -6052,7 +6053,7 @@ class ForgeAgent:
                 "summarize-max-steps-reason",
                 step_count=len(steps),
                 navigation_goal=task.navigation_goal,
-                navigation_payload=task.navigation_payload,
+                navigation_payload=prompt_navigation_payload(task.navigation_payload),
                 steps=steps_results,
                 error_code_mapping_str=(json.dumps(task.error_code_mapping) if task.error_code_mapping else None),
                 local_datetime=datetime.now(skyvern_context.ensure_context().tz_info).isoformat(),
@@ -6204,7 +6205,7 @@ class ForgeAgent:
             prompt = prompt_engine.load_prompt(
                 "summarize-max-retries-reason",
                 navigation_goal=task.navigation_goal,
-                navigation_payload=task.navigation_payload,
+                navigation_payload=prompt_navigation_payload(task.navigation_payload),
                 steps=steps_results,
                 page_html=html,
                 max_retries=max_retries,

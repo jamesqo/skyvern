@@ -118,6 +118,7 @@ from skyvern.forge.sdk.schemas.tasks import (
 from skyvern.forge.sdk.schemas.workflow_runs import WorkflowRunTimeline
 from skyvern.forge.sdk.services import org_auth_service
 from skyvern.forge.sdk.settings_manager import SettingsManager
+from skyvern.forge.sdk.task_execution_policy import embed_task_execution_policy
 from skyvern.forge.sdk.workflow.browser_profile_key import build_workflow_browser_session_storage_key_from_digest
 from skyvern.forge.sdk.workflow.exceptions import (
     FailedToCreateWorkflow,
@@ -338,6 +339,9 @@ async def run_task(
             data_extraction_goal = task_generation.data_extraction_goal
             data_extraction_schema = data_extraction_schema or task_generation.extracted_information_schema
 
+        if run_request.execution_policy is not None:
+            navigation_payload = embed_task_execution_policy(navigation_payload, run_request.execution_policy)
+
         task_v1_request = TaskRequest(
             title=run_request.title,
             url=url,
@@ -407,6 +411,7 @@ async def run_task(
                 browser_session_id=run_request.browser_session_id,
                 start_fresh_browser=run_request.start_fresh_browser,
                 max_screenshot_scrolls=run_request.max_screenshot_scrolls,
+                execution_policy=run_request.execution_policy,
             ),
         )
     if run_request.engine == RunEngine.skyvern_v2:

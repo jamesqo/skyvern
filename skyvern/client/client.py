@@ -4006,6 +4006,7 @@ class AsyncSkyvern:
         max_screenshot_scrolls: typing.Optional[int] = OMIT,
         browser_address: typing.Optional[str] = OMIT,
         run_with: typing.Optional[str] = OMIT,
+        execution_policy: typing.Optional[typing.Dict[str, typing.Any]] = OMIT,
         request_options: typing.Optional[RequestOptions] = None,
     ) -> TaskRunResponse:
         """
@@ -4170,6 +4171,7 @@ class AsyncSkyvern:
             max_screenshot_scrolls=max_screenshot_scrolls,
             browser_address=browser_address,
             run_with=run_with,
+            execution_policy=execution_policy,
             request_options=request_options,
         )
         return _response.data

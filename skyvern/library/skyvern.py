@@ -331,6 +331,7 @@ class Skyvern(AsyncSkyvern):
         include_action_history_in_verification: bool | None = None,
         max_screenshot_scrolls: int | None = None,
         browser_address: str | None = None,
+        execution_policy: dict[str, Any] | None = None,
         request_options: RequestOptions | None = None,
     ) -> TaskRunResponse:
         task_run = await super().run_task(
@@ -353,6 +354,7 @@ class Skyvern(AsyncSkyvern):
             include_action_history_in_verification=include_action_history_in_verification,
             max_screenshot_scrolls=max_screenshot_scrolls,
             browser_address=browser_address,
+            execution_policy=execution_policy,
             request_options=request_options,
         )
 
