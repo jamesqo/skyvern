@@ -107,18 +107,40 @@ async def test_no_submit_policy_blocks_coordinate_click_on_final_submit() -> Non
 
 @pytest.mark.asyncio
 async def test_single_page_policy_closes_oldest_page_and_activates_newest() -> None:
-    task = MagicMock(navigation_payload=_payload(max_open_pages=1))
+    task = MagicMock(task_id="task-1", navigation_payload=_payload(max_open_pages=1))
     old_page = MagicMock(is_closed=MagicMock(return_value=False), close=AsyncMock())
     new_page = MagicMock(is_closed=MagicMock(return_value=False), close=AsyncMock())
     old_page.context.pages = [old_page, new_page]
     browser_state = MagicMock(set_active_page=AsyncMock())
 
-    closed = await handler_module._enforce_open_page_limit(task, browser_state, old_page)
+    with skyvern_context.scoped(SkyvernContext()):
+        closed = await handler_module._enforce_open_page_limit(task, browser_state, old_page)
 
     assert closed == 1
     old_page.close.assert_awaited_once_with()
     new_page.close.assert_not_awaited()
     browser_state.set_active_page.assert_awaited_once_with(new_page)
+
+
+@pytest.mark.asyncio
+async def test_single_page_policy_preserves_preexisting_shared_browser_tabs() -> None:
+    task = MagicMock(task_id="task-1", navigation_payload=_payload(max_open_pages=1))
+    unrelated_page = MagicMock(is_closed=MagicMock(return_value=False), close=AsyncMock())
+    working_page = MagicMock(is_closed=MagicMock(return_value=False), close=AsyncMock())
+    popup_page = MagicMock(is_closed=MagicMock(return_value=False), close=AsyncMock())
+    working_page.context.pages = [unrelated_page, working_page]
+    browser_state = MagicMock(set_active_page=AsyncMock())
+
+    with skyvern_context.scoped(SkyvernContext()):
+        handler_module._capture_protected_task_pages(task, working_page)
+        working_page.context.pages = [unrelated_page, working_page, popup_page]
+        closed = await handler_module._enforce_open_page_limit(task, browser_state, working_page)
+
+    assert closed == 1
+    unrelated_page.close.assert_not_awaited()
+    working_page.close.assert_awaited_once_with()
+    popup_page.close.assert_not_awaited()
+    browser_state.set_active_page.assert_awaited_once_with(popup_page)
 
 
 def test_repeated_failed_action_is_blocked_at_configured_attempt_limit() -> None:

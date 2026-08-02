@@ -3285,6 +3285,7 @@ class ActionHandler:
         llm_caller = LLMCallerManager.get_llm_caller(task.task_id)
         action_span = otel_trace.get_current_span()
         browser_state = app.BROWSER_MANAGER.get_for_task(task.task_id, workflow_run_id=task.workflow_run_id)
+        _capture_protected_task_pages(task, page)
         action_fingerprint = _action_retry_fingerprint(task, action)
         execution_timeout_seconds = _resolve_action_execution_timeout(action)
         execution_timeout_scope: asyncio.Timeout | None = None
@@ -3515,13 +3516,19 @@ def _record_action_attempt(task: Task, fingerprint: str | None, results: list[Ac
 
 
 async def _enforce_open_page_limit(task: Task, browser_state: BrowserState | None, page: Page) -> int:
-    """Close oldest excess pages and keep newest page active after an action."""
+    """Close excess task-owned pages without touching unrelated shared-browser tabs."""
 
     policy = parse_task_execution_policy(task.navigation_payload)
     if policy.max_open_pages is None:
         return 0
 
-    pages = [candidate for candidate in page.context.pages if not candidate.is_closed()]
+    context = skyvern_context.current()
+    protected = context.protected_task_pages.get(task.task_id, set()) if context is not None else set()
+    pages = [
+        candidate
+        for candidate in page.context.pages
+        if not candidate.is_closed() and candidate not in protected
+    ]
     excess_count = len(pages) - policy.max_open_pages
     if excess_count <= 0:
         return 0
@@ -3533,6 +3540,18 @@ async def _enforce_open_page_limit(task: Task, browser_state: BrowserState | Non
     if browser_state is not None:
         await browser_state.set_active_page(keep[-1])
     return excess_count
+
+
+def _capture_protected_task_pages(task: Task, page: Page) -> None:
+    """Snapshot pre-existing pages once, excluding the task's working page."""
+
+    policy = parse_task_execution_policy(task.navigation_payload)
+    context = skyvern_context.current()
+    if policy.max_open_pages is None or context is None or task.task_id in context.protected_task_pages:
+        return
+    context.protected_task_pages[task.task_id] = {
+        candidate for candidate in page.context.pages if candidate is not page and not candidate.is_closed()
+    }
 
 
 _FINAL_SUBMISSION_CONTROL_SCRIPT = r"""

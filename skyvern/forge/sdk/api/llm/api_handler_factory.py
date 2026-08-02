@@ -48,6 +48,7 @@ from skyvern.forge.sdk.api.llm.utils import (
     loads_with_repair,
     parse_api_response,
 )
+from skyvern.forge.sdk.api.llm.usage_ledger import append_usage
 from skyvern.forge.sdk.artifact.manager import BulkArtifactCreationRequest
 from skyvern.forge.sdk.artifact.models import ArtifactType
 from skyvern.forge.sdk.core import skyvern_context
@@ -341,6 +342,35 @@ def _enrich_llm_span(
             "image_count": image_count,
             "prompt_name": prompt_name,
         },
+    )
+
+
+def _append_llm_usage(
+    *,
+    context: SkyvernContext | None,
+    response: Any,
+    model: str,
+    prompt_name: str,
+    llm_cost: float,
+    input_tokens: int,
+    output_tokens: int,
+    reasoning_tokens: int,
+    cached_tokens: int,
+) -> None:
+    """Persist exact provider cost when available, otherwise a marked estimate."""
+
+    reported_cost = LLMAPIHandlerFactory._extract_reported_usage_cost(response)
+    append_usage(
+        task_id=context.task_id if context else None,
+        response_id=str(response_id) if (response_id := getattr(response, "id", None)) else None,
+        model=model,
+        prompt_name=prompt_name,
+        cost_usd=reported_cost if reported_cost is not None else llm_cost,
+        cost_known=reported_cost is not None,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        reasoning_tokens=reasoning_tokens,
+        cached_tokens=cached_tokens,
     )
 
 
@@ -753,14 +783,14 @@ class LLMAPIHandlerFactory:
 
     @staticmethod
     def _extract_reported_usage_cost(response: ModelResponse | CustomStreamWrapper) -> float | None:
-        """Return provider-reported cost from response.usage.cost when present."""
-        if not hasattr(response, "usage") or not response.usage:
-            return None
-
-        usage = response.usage
-        cost = getattr(usage, "cost", None)
+        """Return provider-reported cost from public or LiteLLM response metadata."""
+        usage = getattr(response, "usage", None)
+        cost = getattr(usage, "cost", None) if usage else None
         if cost is None and isinstance(usage, dict):
             cost = usage.get("cost")
+        hidden = getattr(response, "_hidden_params", None)
+        if cost is None and isinstance(hidden, dict):
+            cost = hidden.get("response_cost")
         if cost is None:
             return None
 
@@ -1947,6 +1977,17 @@ class LLMAPIHandlerFactory:
                     image_cost=float(image_cost or 0.0),
                     image_count=int(image_count or 0),
                 )
+                _append_llm_usage(
+                    context=context,
+                    response=response,
+                    model=model_used or main_model_group,
+                    prompt_name=prompt_name,
+                    llm_cost=float(llm_cost or 0.0),
+                    input_tokens=int(prompt_tokens or 0),
+                    output_tokens=int(completion_tokens or 0),
+                    reasoning_tokens=int(reasoning_tokens or 0),
+                    cached_tokens=int(cached_tokens or 0),
+                )
 
                 if step and is_speculative_step:
                     step.speculative_llm_metadata = SpeculativeLLMMetadata(
@@ -2513,6 +2554,17 @@ class LLMAPIHandlerFactory:
                     image_cost=float(image_cost or 0.0),
                     image_count=int(image_count or 0),
                 )
+                _append_llm_usage(
+                    context=context,
+                    response=response,
+                    model=actual_model or llm_config.model_name,
+                    prompt_name=prompt_name,
+                    llm_cost=float(llm_cost or 0.0),
+                    input_tokens=int(prompt_tokens or 0),
+                    output_tokens=int(completion_tokens or 0),
+                    reasoning_tokens=int(reasoning_tokens or 0),
+                    cached_tokens=int(cached_tokens or 0),
+                )
 
                 if step and is_speculative_step:
                     step.speculative_llm_metadata = SpeculativeLLMMetadata(
@@ -3022,6 +3074,17 @@ class LLMCaller:
                 image_tokens=int(image_tokens or 0),
                 image_cost=float(image_cost or 0.0),
                 image_count=int(image_count or 0),
+            )
+            _append_llm_usage(
+                context=context,
+                response=response,
+                model=actual_model or self.llm_config.model_name,
+                prompt_name=prompt_name or "<unknown>",
+                llm_cost=float(call_stats.llm_cost or 0.0),
+                input_tokens=int(call_stats.input_tokens or 0),
+                output_tokens=int(call_stats.output_tokens or 0),
+                reasoning_tokens=int(call_stats.reasoning_tokens or 0),
+                cached_tokens=int(call_stats.cached_tokens or 0),
             )
 
             # Raw response is used for CUA engine LLM calls.
