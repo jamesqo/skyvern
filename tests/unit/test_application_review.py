@@ -78,6 +78,16 @@ async def test_review_audit_uses_strongest_form_across_frames() -> None:
 
 
 @pytest.mark.asyncio
+async def test_review_audit_accepts_form_like_document_root() -> None:
+    page = _page(_frame_result())
+
+    result = await audit_application_review(page, require_verified_upload=False, upload_verified=False)
+
+    assert result.ready is True
+    assert result.form_found is True
+
+
+@pytest.mark.asyncio
 async def test_completion_gate_vetoes_non_ready_application() -> None:
     policy = {
         EXECUTION_POLICY_KEY: {

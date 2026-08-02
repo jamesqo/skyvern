@@ -50,7 +50,11 @@ _FRAME_AUDIT_SCRIPT = r"""
     const allFinalSubmitControls = Array.from(
         document.querySelectorAll("button, input[type='submit'], [role='button']")
     ).filter((element) => visible(element) && finalSubmit(element));
-    const candidates = Array.from(document.querySelectorAll("form")).map((form) => {
+    // React ATSs such as Ashby can render one application surface without a
+    // literal <form>. Audit the document root as a fallback candidate while
+    // retaining real forms for conventional and embedded implementations.
+    const roots = [...document.querySelectorAll("form"), document.documentElement];
+    const candidates = roots.map((form) => {
         const controls = Array.from(form.querySelectorAll("input, textarea, select")).filter(visible);
         const hasEmail = controls.some((field) => field.type === "email" || /(^|[\s_-])email([\s_-]|$)/.test(fieldText(field)));
         const hasName = controls.some((field) => /(first|last|given|family|full)[\s_-]*name/.test(fieldText(field)));
