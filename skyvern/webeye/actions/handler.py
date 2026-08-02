@@ -3460,6 +3460,17 @@ def check_for_invalid_web_action(
 
 def _execution_policy_violation(task: Task, action: Action) -> str | None:
     policy = parse_task_execution_policy(task.navigation_payload)
+    if not policy.allow_navigation and isinstance(
+        action,
+        (
+            actions.GotoUrlAction,
+            actions.GoBackAction,
+            actions.GoForwardAction,
+            actions.NewTabAction,
+            actions.ReloadPageAction,
+        ),
+    ):
+        return "navigation"
     if isinstance(action, actions.SolveCaptchaAction) and not policy.allow_captcha_wait:
         return "captcha_requires_human"
     if isinstance(action, actions.NewTabAction) and policy.max_open_pages == 1:
@@ -3526,11 +3537,7 @@ async def _enforce_open_page_limit(task: Task, browser_state: BrowserState | Non
 
     context = skyvern_context.current()
     protected = context.protected_task_pages.get(task.task_id, set()) if context is not None else set()
-    pages = [
-        candidate
-        for candidate in page.context.pages
-        if not candidate.is_closed() and candidate not in protected
-    ]
+    pages = [candidate for candidate in page.context.pages if not candidate.is_closed() and candidate not in protected]
     excess_count = len(pages) - policy.max_open_pages
     if excess_count <= 0:
         return 0

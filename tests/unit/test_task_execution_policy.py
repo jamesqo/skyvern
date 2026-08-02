@@ -18,7 +18,15 @@ from skyvern.forge.sdk.task_execution_policy import (
     prompt_navigation_payload,
 )
 from skyvern.webeye.actions import handler as handler_module
-from skyvern.webeye.actions.actions import ExecuteJsAction, InputTextAction, NewTabAction, SolveCaptchaAction
+from skyvern.webeye.actions.actions import (
+    ExecuteJsAction,
+    GoBackAction,
+    GotoUrlAction,
+    InputTextAction,
+    NewTabAction,
+    ReloadPageAction,
+    SolveCaptchaAction,
+)
 from skyvern.webeye.actions.responses import ActionFailure, ActionSuccess
 
 
@@ -30,6 +38,7 @@ def test_missing_policy_preserves_upstream_behavior() -> None:
     policy = parse_task_execution_policy({"first_name": "Ada"})
 
     assert policy.allow_final_submit is True
+    assert policy.allow_navigation is True
     assert policy.max_open_pages is None
     assert policy.max_action_attempts is None
     assert policy.require_review_ready is False
@@ -65,6 +74,21 @@ def test_single_page_policy_blocks_new_tab_action() -> None:
     task = MagicMock(navigation_payload=_payload(max_open_pages=1))
 
     assert handler_module._execution_policy_violation(task, NewTabAction(url="https://example.test")) == "new_tab"
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        GotoUrlAction(url="https://example.test/elsewhere"),
+        NewTabAction(url="https://example.test/elsewhere"),
+        GoBackAction(),
+        ReloadPageAction(),
+    ],
+)
+def test_navigation_locked_policy_blocks_page_navigation(action: object) -> None:
+    task = MagicMock(navigation_payload=_payload(allow_navigation=False))
+
+    assert handler_module._execution_policy_violation(task, action) == "navigation"
 
 
 def test_no_submit_policy_blocks_execute_js() -> None:
