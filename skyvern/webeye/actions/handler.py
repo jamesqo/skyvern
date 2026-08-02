@@ -3460,6 +3460,8 @@ def check_for_invalid_web_action(
 
 def _execution_policy_violation(task: Task, action: Action) -> str | None:
     policy = parse_task_execution_policy(task.navigation_payload)
+    if isinstance(action, actions.SolveCaptchaAction) and not policy.allow_captcha_wait:
+        return "captcha_requires_human"
     if isinstance(action, actions.NewTabAction) and policy.max_open_pages == 1:
         return "new_tab"
     if isinstance(action, actions.ExecuteJsAction) and not policy.allow_final_submit:

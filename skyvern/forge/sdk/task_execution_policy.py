@@ -21,6 +21,7 @@ class TaskExecutionPolicy(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     allow_final_submit: bool = True
+    allow_captcha_wait: bool = True
     max_open_pages: int | None = Field(default=None, ge=1)
     max_action_attempts: int | None = Field(default=None, ge=1)
     require_review_ready: bool = False

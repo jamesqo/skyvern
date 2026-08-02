@@ -18,7 +18,7 @@ from skyvern.forge.sdk.task_execution_policy import (
     prompt_navigation_payload,
 )
 from skyvern.webeye.actions import handler as handler_module
-from skyvern.webeye.actions.actions import ExecuteJsAction, InputTextAction, NewTabAction
+from skyvern.webeye.actions.actions import ExecuteJsAction, InputTextAction, NewTabAction, SolveCaptchaAction
 from skyvern.webeye.actions.responses import ActionFailure, ActionSuccess
 
 
@@ -71,6 +71,12 @@ def test_no_submit_policy_blocks_execute_js() -> None:
     task = MagicMock(navigation_payload=_payload(allow_final_submit=False))
 
     assert handler_module._execution_policy_violation(task, ExecuteJsAction(js_code="form.submit()")) == "execute_js"
+
+
+def test_captcha_wait_can_be_replaced_with_immediate_human_handoff() -> None:
+    task = MagicMock(navigation_payload=_payload(allow_captcha_wait=False))
+
+    assert handler_module._execution_policy_violation(task, SolveCaptchaAction()) == "captcha_requires_human"
 
 
 @pytest.mark.asyncio
