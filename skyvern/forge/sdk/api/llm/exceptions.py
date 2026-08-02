@@ -66,6 +66,45 @@ class LLMProviderErrorRetryableTask(LLMProviderError):
         SkyvernException.__init__(self, f"Retryable error while using LLMProvider {llm_key}{detail}")
 
 
+class LLMProviderRequestRejected(LLMProviderError):
+    """Permanent provider rejection with a safe, body-free user message."""
+
+    def __init__(self, llm_key: str, status_code: int) -> None:
+        self.status_code = status_code
+        reason = {
+            400: "invalid request",
+            401: "invalid provider credentials",
+            402: "payment required or insufficient provider credits",
+            403: "provider authorization denied",
+            404: "provider model or endpoint not found",
+        }.get(status_code, "permanent client error")
+        SkyvernException.__init__(
+            self,
+            f"LLMProvider {llm_key} rejected the request (HTTP {status_code}: {reason})",
+        )
+
+
+_RETRYABLE_HTTP_STATUS_CODES = frozenset({408, 409, 425, 429})
+
+
+def provider_error_status_code(cause: Exception) -> int | None:
+    """Return provider HTTP status without inspecting or logging response bodies."""
+    status_code = getattr(cause, "status_code", None)
+    if isinstance(status_code, int):
+        return status_code
+    response = getattr(cause, "response", None)
+    response_status_code = getattr(response, "status_code", None)
+    return response_status_code if isinstance(response_status_code, int) else None
+
+
+def is_retryable_provider_error(cause: Exception) -> bool:
+    """Treat unknown, transient, and server errors as retryable; reject permanent 4xx errors."""
+    status_code = provider_error_status_code(cause)
+    if status_code is None:
+        return True
+    return status_code in _RETRYABLE_HTTP_STATUS_CODES or status_code >= 500
+
+
 class LLMOutputTruncatedError(InvalidLLMResponseFormat):
     def __init__(self, model: str, prompt_tokens: int, completion_tokens: int, reasoning_tokens: int) -> None:
         super().__init__(

@@ -20,6 +20,7 @@ from skyvern.forge.sdk.api.files import resolve_run_download_id
 from skyvern.forge.sdk.core import skyvern_context
 from skyvern.forge.sdk.routes.streaming.registries import set_deferred_close_params, stream_ref_active
 from skyvern.forge.sdk.schemas.tasks import Task
+from skyvern.forge.sdk.task_execution_policy import parse_task_execution_policy
 from skyvern.forge.sdk.workflow.models.workflow import WorkflowRun
 from skyvern.schemas.runs import ProxyLocation, ProxyLocationInput
 from skyvern.webeye.browser_artifacts import VideoArtifact
@@ -454,6 +455,9 @@ class RealBrowserManager(BrowserManager):
         if browser_state is not None:
             return await _on_browser_state_acquired(browser_state, task.workflow_run_id)
 
+        policy = parse_task_execution_policy(task.navigation_payload)
+        initial_url = task.url if policy.allow_navigation else None
+
         if browser_session_id:
             LOG.info(
                 "Getting browser state for task from persistent sessions manager",
@@ -473,7 +477,7 @@ class RealBrowserManager(BrowserManager):
                 else:
                     LOG.warning("Organization ID is not set for task", task_id=task.task_id)
                 page = await browser_state.get_working_page()
-                if page:
+                if page and policy.allow_navigation:
                     await browser_state.navigate_to_url(page=page, url=task.url)
                 else:
                     LOG.warning("Browser state has no page", workflow_run_id=task.workflow_run_id)
@@ -490,7 +494,7 @@ class RealBrowserManager(BrowserManager):
                     extra_http_headers = _merge_proxy_session_headers(extra_http_headers, session.proxy_session_id)
             browser_state = await self._create_browser_state(
                 proxy_location=proxy_location,
-                url=task.url,
+                url=initial_url,
                 task_id=task.task_id,
                 # Pin the engine under the workflow_run_id for a workflow-owned task so it shares one
                 # selection owner (and one flag distinct_id/property) with the workflow path. Both go to
@@ -519,7 +523,7 @@ class RealBrowserManager(BrowserManager):
         # The URL here is only used when creating a new page, and not when using an existing page.
         # This will make sure browser_state.page is not None.
         await browser_state.get_or_create_page(
-            url=task.url,
+            url=initial_url,
             proxy_location=proxy_location,
             task_id=task.task_id,
             workflow_permanent_id=task.workflow_permanent_id,

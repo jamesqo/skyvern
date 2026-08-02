@@ -355,6 +355,8 @@ def _matches_current(
 ) -> bool:
     if current.browser is None or current.context is None:
         return False
+    if not _browser_is_live(current.browser):
+        return False
     if not _hashes_equal(current.api_key_hash, _api_key_hash(get_active_api_key())):
         return False
 
@@ -365,6 +367,24 @@ def _matches_current(
     if local:
         return current.context.mode == "local"
     return False
+
+
+def _browser_is_live(browser: SkyvernBrowser) -> bool:
+    """Return whether a cached browser handle can still serve Playwright calls."""
+    if getattr(browser, "_closed", False) is True:
+        return False
+
+    try:
+        browser_context = browser._browser_context
+        playwright_browser = browser_context.browser
+        if playwright_browser is not None and playwright_browser.is_connected() is False:
+            return False
+        # Accessing pages exercises the Playwright channel and catches handles
+        # whose transport was closed without SkyvernBrowser.close().
+        browser_context.pages
+    except Exception:
+        return False
+    return True
 
 
 async def resolve_browser(

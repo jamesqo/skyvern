@@ -1055,6 +1055,28 @@ def test_get_auth_db_uses_agent_function_builder(monkeypatch: pytest.MonkeyPatch
     )
 
 
+def test_get_auth_db_uses_agent_db_for_standalone_oss_mcp(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    built_db = object()
+
+    class UninitializedApp:
+        @property
+        def AGENT_FUNCTION(self) -> object:
+            raise RuntimeError("ForgeApp is not initialized")
+
+    monkeypatch.setattr(mcp_http_auth, "app", UninitializedApp())
+    monkeypatch.setattr(mcp_http_auth, "_auth_db", None)
+    agent_db = Mock(return_value=built_db)
+    monkeypatch.setattr(mcp_http_auth, "AgentDB", agent_db)
+
+    assert mcp_http_auth.get_auth_db() is built_db
+    agent_db.assert_called_once_with(
+        mcp_http_auth.settings.DATABASE_STRING,
+        debug_enabled=mcp_http_auth.settings.DEBUG_MODE,
+    )
+
+
 @pytest.mark.asyncio
 async def test_validate_mcp_api_key_concurrent_callers_all_succeed(
     monkeypatch: pytest.MonkeyPatch,

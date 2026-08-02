@@ -115,6 +115,12 @@ class SkyvernContext:
     # builtins.set, not set: the module-level `set` context setter below shadows the
     # builtin for anything that resolves the name after import.
     downloaded_pdf_sources: set[str] = field(default_factory=builtins.set)
+    verified_file_upload_task_ids: set[str] = field(default_factory=builtins.set)
+    failed_task_action_attempts: dict[tuple[str, str], int] = field(default_factory=dict)
+    # Pages that predated a task's first browser action. Execution-policy page limits
+    # apply only to pages owned by that task, never to unrelated user tabs in a shared
+    # CDP browser context.
+    protected_task_pages: dict[str, set[Page]] = field(default_factory=dict)
     refresh_working_page: bool = False
     frame_index_map: dict[Frame, int] = field(default_factory=dict)
     dropped_css_svg_element_map: dict[str, bool] = field(default_factory=dict)

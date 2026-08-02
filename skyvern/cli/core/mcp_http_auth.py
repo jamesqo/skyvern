@@ -341,10 +341,21 @@ def get_auth_db() -> AgentDB:
     # Guard singleton init in case HTTP transport is served with threaded workers.
     with _auth_db_lock:
         if _auth_db is None:
-            _auth_db = app.AGENT_FUNCTION.build_mcp_auth_db(
-                settings.DATABASE_STRING,
-                debug_enabled=settings.DEBUG_MODE,
-            )
+            try:
+                agent_function = app.AGENT_FUNCTION
+            except RuntimeError:
+                # Standalone OSS MCP does not initialize ForgeApp. It still
+                # needs the same database-backed API-key validation as the
+                # API-mounted server.
+                _auth_db = AgentDB(
+                    settings.DATABASE_STRING,
+                    debug_enabled=settings.DEBUG_MODE,
+                )
+            else:
+                _auth_db = agent_function.build_mcp_auth_db(
+                    settings.DATABASE_STRING,
+                    debug_enabled=settings.DEBUG_MODE,
+                )
             LOG.info("MCP auth DB initialized", db_class=type(_auth_db).__name__)
     return _auth_db
 

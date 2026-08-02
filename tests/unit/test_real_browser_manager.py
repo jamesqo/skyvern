@@ -232,7 +232,27 @@ def make_task(
     task.workflow_permanent_id = None
     task.extra_http_headers = None
     task.browser_address = None
+    task.navigation_payload = None
     return task
+
+
+@pytest.mark.asyncio
+async def test_navigation_locked_task_adopts_current_page_without_initial_navigation() -> None:
+    manager = RealBrowserManager()
+    task = make_task("tsk_locked")
+    task.navigation_payload = {"__skyvern_execution_policy__": {"allow_navigation": False}}
+    new_browser_state = MagicMock()
+    new_browser_state.get_or_create_page = AsyncMock()
+
+    with patch("skyvern.webeye.real_browser_manager.app") as mock_app:
+        configure_browser_context_acquired_hook(mock_app)
+        with patch.object(
+            manager, "_create_browser_state", new=AsyncMock(return_value=new_browser_state)
+        ) as mock_create:
+            await manager.get_or_create_for_task(task=task)
+
+    assert mock_create.await_args.kwargs["url"] is None
+    assert new_browser_state.get_or_create_page.await_args.kwargs["url"] is None
 
 
 def make_session(proxy_location: object = None, proxy_session_id: str | None = None) -> MagicMock:

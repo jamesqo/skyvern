@@ -18,6 +18,7 @@ from skyvern.forge.sdk.api.llm.custom_llm_registry import is_custom_llm_model_na
 from skyvern.forge.sdk.db.enums import TaskType
 from skyvern.forge.sdk.schemas.files import FileInfo
 from skyvern.forge.sdk.settings_manager import SettingsManager
+from skyvern.forge.sdk.task_execution_policy import parse_task_execution_policy
 from skyvern.forge.sdk.workflow.models.run_limits import MaxScreenshotScrolls
 from skyvern.schemas.docs.doc_strings import PROXY_LOCATION_DOC_STRING
 from skyvern.schemas.runs import ProxyLocationInput
@@ -64,6 +65,17 @@ class TaskBase(BaseModel):
         description="The user's details needed to achieve the task.",
         examples=[{"name": "John Doe", "email": "john@doe.com"}],
     )
+
+    @field_validator("navigation_payload")
+    @classmethod
+    def validate_task_execution_policy(
+        cls, payload: dict[str, Any] | list | str | None
+    ) -> dict[str, Any] | list | str | None:
+        """Reject malformed hard runtime limits at the API boundary."""
+
+        parse_task_execution_policy(payload)
+        return payload
+
     error_code_mapping: dict[str, str] | None = Field(
         default=None,
         description="The mapping of error codes and their descriptions.",

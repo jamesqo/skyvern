@@ -316,6 +316,57 @@ async def test_resolve_browser_reuses_matching_cloud_session(monkeypatch: pytest
 
 
 @pytest.mark.asyncio
+async def test_resolve_browser_reconnects_matching_closed_cdp_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    current_browser = MagicMock()
+    current_browser._closed = True
+    session_manager.set_current_session(
+        session_manager.SessionState(
+            browser=current_browser,
+            context=BrowserContext(mode="cdp", cdp_url="ws://chrome"),
+            api_key_hash=session_manager._api_key_hash(client_mod.get_active_api_key()),
+        )
+    )
+
+    replacement_browser = MagicMock()
+    replacement_browser._closed = False
+    fake_skyvern = MagicMock()
+    fake_skyvern.connect_to_browser_over_cdp = AsyncMock(return_value=replacement_browser)
+    monkeypatch.setattr(session_manager, "get_skyvern", lambda: fake_skyvern)
+
+    browser, ctx = await session_manager.resolve_browser(cdp_url="ws://chrome")
+
+    assert browser is replacement_browser
+    assert ctx.cdp_url == "ws://chrome"
+    fake_skyvern.connect_to_browser_over_cdp.assert_awaited_once_with("ws://chrome")
+
+
+@pytest.mark.asyncio
+async def test_resolve_browser_reconnects_disconnected_cdp_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    current_browser = MagicMock()
+    current_browser._closed = False
+    current_browser._browser_context.browser.is_connected.return_value = False
+    session_manager.set_current_session(
+        session_manager.SessionState(
+            browser=current_browser,
+            context=BrowserContext(mode="cdp", cdp_url="ws://chrome"),
+            api_key_hash=session_manager._api_key_hash(client_mod.get_active_api_key()),
+        )
+    )
+
+    replacement_browser = MagicMock()
+    replacement_browser._closed = False
+    fake_skyvern = MagicMock()
+    fake_skyvern.connect_to_browser_over_cdp = AsyncMock(return_value=replacement_browser)
+    monkeypatch.setattr(session_manager, "get_skyvern", lambda: fake_skyvern)
+
+    browser, ctx = await session_manager.resolve_browser(cdp_url="ws://chrome")
+
+    assert browser is replacement_browser
+    assert ctx.cdp_url == "ws://chrome"
+    fake_skyvern.connect_to_browser_over_cdp.assert_awaited_once_with("ws://chrome")
+
+
+@pytest.mark.asyncio
 async def test_resolve_browser_does_not_reuse_session_for_different_api_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

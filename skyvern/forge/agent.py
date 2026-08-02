@@ -89,7 +89,10 @@ from skyvern.forge.sdk.api.llm.config_registry import LLMConfigRegistry
 from skyvern.forge.sdk.api.llm.exceptions import (
     LLM_PROVIDER_ERROR_RETRYABLE_TASK_TYPE,
     LLM_PROVIDER_ERROR_TYPE,
+    LLMProviderError,
+    LLMProviderErrorRetryableTask,
     LLMResponseMissingActionsError,
+    provider_error_status_code,
 )
 from skyvern.forge.sdk.api.llm.ui_tars_llm_caller import UITarsLLMCaller
 from skyvern.forge.sdk.api.llm.vertex_cache_manager import get_cache_manager
@@ -128,6 +131,7 @@ from skyvern.forge.sdk.schemas.organizations import Organization
 from skyvern.forge.sdk.schemas.tasks import Task, TaskRequest, TaskResponse, TaskStatus
 from skyvern.forge.sdk.schemas.totp_codes import OTPType
 from skyvern.forge.sdk.submission import shadow as submission_shadow
+from skyvern.forge.sdk.task_execution_policy import parse_task_execution_policy, prompt_navigation_payload
 from skyvern.forge.sdk.trace import VerificationTrigger, apply_context_attrs, traced, traced_span
 from skyvern.forge.sdk.workflow.context_manager import WorkflowRunContext
 from skyvern.forge.sdk.workflow.models.block import (
@@ -1755,6 +1759,32 @@ class ForgeAgent:
         ):
             raise
 
+        except LLMProviderError as e:
+            if not isinstance(e, LLMProviderErrorRetryableTask):
+                status_code = provider_error_status_code(e.__cause__ or e)
+                _step_span.set_attribute("llm.provider_error.retryable", False)
+                if status_code is not None:
+                    _step_span.set_attribute("llm.provider_error.status_code", status_code)
+                LOG.warning(
+                    "Permanent LLM provider error, stopping task without retry",
+                    llm_status_code=status_code,
+                    step_order=step.order,
+                    step_retry=step.retry_index,
+                )
+                raise
+
+            LOG.exception(
+                "Retryable LLM provider exception in agent_step, marking step as failed",
+                step_order=step.order,
+                step_retry=step.retry_index,
+            )
+            detailed_agent_step_output.step_exception = e.__class__.__name__
+            failed_step = await self.update_step(
+                step=step,
+                status=StepStatus.failed,
+                output=detailed_agent_step_output.to_agent_step_output(),
+            )
+            return failed_step, detailed_agent_step_output.get_clean_detailed_output()
         except Exception as e:
             LOG.exception(
                 "Unexpected exception in agent_step, marking step as failed",
@@ -3264,7 +3294,7 @@ class ForgeAgent:
             prompt_engine=prompt_engine,
             template_name=template_name,
             navigation_goal=unwrapped_goals.navigation_goal,
-            navigation_payload=task.navigation_payload,
+            navigation_payload=prompt_navigation_payload(task.navigation_payload),
             complete_criterion=unwrapped_goals.complete_criterion,
             complete_criterion_is_untrusted=bool(
                 unwrapped_goals.complete_criterion and _ctx and _ctx.complete_criterion_is_untrusted
@@ -6052,7 +6082,7 @@ class ForgeAgent:
                 "summarize-max-steps-reason",
                 step_count=len(steps),
                 navigation_goal=task.navigation_goal,
-                navigation_payload=task.navigation_payload,
+                navigation_payload=prompt_navigation_payload(task.navigation_payload),
                 steps=steps_results,
                 error_code_mapping_str=(json.dumps(task.error_code_mapping) if task.error_code_mapping else None),
                 local_datetime=datetime.now(skyvern_context.ensure_context().tz_info).isoformat(),
@@ -6204,7 +6234,7 @@ class ForgeAgent:
             prompt = prompt_engine.load_prompt(
                 "summarize-max-retries-reason",
                 navigation_goal=task.navigation_goal,
-                navigation_payload=task.navigation_payload,
+                navigation_payload=prompt_navigation_payload(task.navigation_payload),
                 steps=steps_results,
                 page_html=html,
                 max_retries=max_retries,
@@ -6440,6 +6470,31 @@ class ForgeAgent:
             )
             return True, last_step, None
         if step.is_terminated():
+            policy = parse_task_execution_policy(task.navigation_payload)
+            if (
+                policy.require_review_ready
+                and browser_state is not None
+                and await app.AGENT_FUNCTION.gate_step_completion(
+                    task=task,
+                    step=step,
+                    task_block=task_block,
+                    page=page,
+                    browser_state=browser_state,
+                )
+            ):
+                LOG.info(
+                    "Application is review-ready; treating policy-compliant termination as completion",
+                    step_order=step.order,
+                    step_retry=step.retry_index,
+                )
+                last_step = await self.update_step(step, is_last=True)
+                extracted_information = await self.get_extracted_information_for_task(task)
+                await self.update_task(
+                    task,
+                    status=TaskStatus.completed,
+                    extracted_information=extracted_information,
+                )
+                return True, last_step, None
             LOG.info(
                 "Step completed and terminated by the agent, marking task as terminated",
                 step_order=step.order,

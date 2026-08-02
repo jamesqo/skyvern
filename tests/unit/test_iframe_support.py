@@ -60,6 +60,66 @@ class TestMCPFrameTools:
         assert result["error"]["code"] == mcp_browser.ErrorCode.NO_ACTIVE_BROWSER
 
     @pytest.mark.asyncio
+    async def test_frame_application_selects_unique_form(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from types import SimpleNamespace
+
+        from skyvern.cli.core.browser_ops import FrameInfo
+        from skyvern.cli.core.result import BrowserContext
+        from skyvern.cli.mcp_tools import browser as mcp_browser
+
+        page = MagicMock()
+        page._working_frame = MagicMock()
+        page.page.frames = [
+            SimpleNamespace(evaluate=AsyncMock(return_value=False)),
+            SimpleNamespace(evaluate=AsyncMock(return_value=False)),
+            SimpleNamespace(evaluate=AsyncMock(return_value=False)),
+        ]
+        context = BrowserContext(mode="local", cdp_url="http://chrome:9222")
+        state = SimpleNamespace(_working_frame=None)
+        switch = AsyncMock(return_value=SimpleNamespace(name="application", url="https://ats.example/apply"))
+        monkeypatch.setattr(
+            mcp_browser,
+            "get_page",
+            AsyncMock(return_value=(page, context)),
+        )
+        monkeypatch.setattr(
+            mcp_browser,
+            "do_frame_list",
+            AsyncMock(
+                return_value=[
+                    FrameInfo(index=0, name="", url="https://jobs.example", is_main=True),
+                    FrameInfo(
+                        index=1,
+                        name="application",
+                        url="https://ats.example/apply",
+                        is_main=False,
+                    ),
+                    FrameInfo(
+                        index=2,
+                        name="analytics",
+                        url="https://metrics.example",
+                        is_main=False,
+                    ),
+                ]
+            ),
+        )
+        monkeypatch.setattr(mcp_browser, "do_frame_switch", switch)
+        monkeypatch.setattr(mcp_browser, "get_current_session", lambda: state)
+        clear_refs = MagicMock()
+        monkeypatch.setattr(mcp_browser, "clear_session_ref_map", clear_refs)
+
+        result = await mcp_browser.skyvern_frame_application()
+
+        assert result["ok"] is True
+        assert result["data"]["frame_index"] == 1
+        assert state._working_frame is page._working_frame
+        assert switch.await_args_list[-1].kwargs == {"index": 1}
+        clear_refs.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_navigate_clears_working_frame(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """skyvern_navigate must clear _working_frame to prevent stale frame references."""
         from skyvern.cli.core.session_manager import SessionState
