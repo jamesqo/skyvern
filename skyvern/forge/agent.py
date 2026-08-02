@@ -131,7 +131,7 @@ from skyvern.forge.sdk.schemas.organizations import Organization
 from skyvern.forge.sdk.schemas.tasks import Task, TaskRequest, TaskResponse, TaskStatus
 from skyvern.forge.sdk.schemas.totp_codes import OTPType
 from skyvern.forge.sdk.submission import shadow as submission_shadow
-from skyvern.forge.sdk.task_execution_policy import prompt_navigation_payload
+from skyvern.forge.sdk.task_execution_policy import parse_task_execution_policy, prompt_navigation_payload
 from skyvern.forge.sdk.trace import VerificationTrigger, apply_context_attrs, traced, traced_span
 from skyvern.forge.sdk.workflow.context_manager import WorkflowRunContext
 from skyvern.forge.sdk.workflow.models.block import (
@@ -6470,6 +6470,31 @@ class ForgeAgent:
             )
             return True, last_step, None
         if step.is_terminated():
+            policy = parse_task_execution_policy(task.navigation_payload)
+            if (
+                policy.require_review_ready
+                and browser_state is not None
+                and await app.AGENT_FUNCTION.gate_step_completion(
+                    task=task,
+                    step=step,
+                    task_block=task_block,
+                    page=page,
+                    browser_state=browser_state,
+                )
+            ):
+                LOG.info(
+                    "Application is review-ready; treating policy-compliant termination as completion",
+                    step_order=step.order,
+                    step_retry=step.retry_index,
+                )
+                last_step = await self.update_step(step, is_last=True)
+                extracted_information = await self.get_extracted_information_for_task(task)
+                await self.update_task(
+                    task,
+                    status=TaskStatus.completed,
+                    extracted_information=extracted_information,
+                )
+                return True, last_step, None
             LOG.info(
                 "Step completed and terminated by the agent, marking task as terminated",
                 step_order=step.order,

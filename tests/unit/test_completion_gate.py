@@ -12,10 +12,11 @@ import pytest
 from skyvern.forge import app
 from skyvern.forge.agent import ForgeAgent
 from skyvern.forge.sdk.models import StepStatus
+from skyvern.forge.sdk.task_execution_policy import EXECUTION_POLICY_KEY
 from skyvern.forge.sdk.schemas.tasks import TaskStatus
 from skyvern.schemas.runs import RunEngine
 from skyvern.schemas.steps import AgentStepOutput
-from skyvern.webeye.actions.actions import CompleteAction
+from skyvern.webeye.actions.actions import CompleteAction, TerminateAction
 from skyvern.webeye.actions.responses import ActionSuccess
 from tests.unit.helpers import (
     make_browser_state,
@@ -161,3 +162,45 @@ async def test_decisive_completion_gate_veto_creates_next_step(monkeypatch: pyte
     assert created_next is next_step
     completed_calls = [c for c in update_task.await_args_list if c.kwargs.get("status") == TaskStatus.completed]
     assert completed_calls == []
+
+
+@pytest.mark.asyncio
+async def test_review_ready_termination_completes_application(monkeypatch: pytest.MonkeyPatch) -> None:
+    agent = ForgeAgent()
+    now = datetime.now(UTC)
+    organization = make_organization(now)
+    task = make_task(now, organization, navigation_goal=None)
+    task.navigation_payload = {
+        EXECUTION_POLICY_KEY: {
+            "allow_final_submit": False,
+            "require_review_ready": True,
+        }
+    }
+    terminate = TerminateAction(reasoning="Only final submission remains")
+    output = AgentStepOutput(action_results=[ActionSuccess()], actions_and_results=[(terminate, [ActionSuccess()])])
+    step = make_step(now, task, step_id="step-terminated", status=StepStatus.completed, order=0, output=output)
+    assert step.is_terminated()
+
+    update_task = AsyncMock()
+    monkeypatch.setattr(agent, "update_task", update_task)
+    monkeypatch.setattr(agent, "update_step", AsyncMock(side_effect=lambda current, **kwargs: current))
+    monkeypatch.setattr(agent, "get_extracted_information_for_task", AsyncMock(return_value=None))
+    gate = AsyncMock(return_value=True)
+    monkeypatch.setattr(app.AGENT_FUNCTION, "gate_step_completion", gate)
+
+    browser_state, scraped_page, page = make_browser_state()
+    completed, last_step, created_next = await agent.handle_completed_step(
+        organization=organization,
+        task=task,
+        step=step,
+        page=page,
+        browser_state=browser_state,
+        scraped_page=scraped_page,
+        engine=RunEngine.skyvern_v1,
+    )
+
+    assert completed is True
+    assert last_step is step
+    assert created_next is None
+    gate.assert_awaited_once()
+    update_task.assert_awaited_once_with(task, status=TaskStatus.completed, extracted_information=None)
